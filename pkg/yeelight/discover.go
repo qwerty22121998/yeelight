@@ -20,7 +20,7 @@ type DiscoverConfig struct {
 	Timeout     time.Duration
 }
 
-func (d *DiscoverConfig) sanitize() {
+func (d *DiscoverConfig) Sanitize() {
 	if d.SSDPAddress == "" {
 		d.SSDPAddress = DefaultSPSDAddress
 	}
@@ -60,7 +60,7 @@ func Discover(ctx context.Context, conf *DiscoverConfig) ([]*Yeelight, error) {
 	if conf == nil {
 		conf = &DiscoverConfig{}
 	}
-	conf.sanitize()
+	conf.Sanitize()
 	ssdpAddr, err := net.ResolveUDPAddr("udp", conf.SSDPAddress)
 	if err != nil {
 		return nil, err

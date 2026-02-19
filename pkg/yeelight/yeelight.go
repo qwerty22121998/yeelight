@@ -51,6 +51,7 @@ type Yeelight struct {
 	notificationHandler *notificationHandler
 	logger              *slog.Logger
 	props               map[Property]interface{}
+	done                chan struct{}
 }
 
 // New establishes a TCP connection to the Yeelight device at the specified IP address and initializes a Yeelight instance. It also starts a goroutine to listen for responses from the device.
@@ -64,6 +65,7 @@ func New(ctx context.Context, props *Info) (*Yeelight, error) {
 		con:                 con,
 		notificationHandler: newNotifier(),
 		logger:              slog.Default(),
+		done:                make(chan struct{}),
 	}
 	go d.receiveResponse(ctx)
 	return d, nil
@@ -75,14 +77,18 @@ func (d *Yeelight) receiveResponse(ctx context.Context) {
 	reader := bufio.NewReader(d.con)
 	for {
 		select {
+		case _, ok := <-d.done:
+			if !ok {
+				return
+			}
+			return
 		case <-ctx.Done():
-			slog.InfoContext(ctx, "Stopping response receiver")
 			return
 		default:
 			data, err := reader.ReadString('\n')
 			if err != nil {
 				slog.ErrorContext(ctx, "Error reading response", "error", err)
-				continue
+				return
 			}
 			fmt.Println(data)
 			var resp Response
@@ -95,6 +101,11 @@ func (d *Yeelight) receiveResponse(ctx context.Context) {
 			d.notificationHandler.push(resp)
 		}
 	}
+}
+
+func (d *Yeelight) Close() error {
+	close(d.done)
+	return d.con.Close()
 }
 
 func (d *Yeelight) FetchProps(ctx context.Context) error {

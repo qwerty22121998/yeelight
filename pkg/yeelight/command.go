@@ -10,6 +10,13 @@ type Command struct {
 	Params []any  `json:"params"`
 }
 
+func C(method Method, params ...any) Command {
+	return Command{
+		Method: method,
+		Params: params,
+	}
+}
+
 type Response struct {
 	ID     int              `json:"id"`
 	Method Method           `json:"method"`
