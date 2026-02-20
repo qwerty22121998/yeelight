@@ -12,10 +12,10 @@ func main() {
 		panic(err)
 	}
 	for _, device := range devices {
-		device.SendCommand(ctx, yeelight.Command{
-			Method: yeelight.GetProp,
-			Params: []any{"*"},
-		})
+		device.FetchProps(ctx)
+
 	}
+
+	<-ctx.Done()
 
 }

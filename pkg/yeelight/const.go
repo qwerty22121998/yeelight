@@ -3,6 +3,7 @@ package yeelight
 type Method string
 
 const (
+	Props          Method = "props"
 	GetProp        Method = "get_prop"
 	SetCtAbx       Method = "set_ct_abx"
 	SetRGB         Method = "set_rgb"
@@ -47,10 +48,15 @@ const (
 	EffectSudden Effect = "sudden"
 )
 
+func (e Effect) String() string {
+	return string(e)
+}
+
 type Property string
 
 const (
 	Power        Property = "power"
+	MainPower    Property = "main_power"
 	Bright       Property = "bright"
 	Ct           Property = "ct"
 	RGB          Property = "rgb"
@@ -75,8 +81,9 @@ const (
 	ActiveMode   Property = "active_mode"
 )
 
-var AllProperties = []any{
+var AllProperties = []Property{
 	Power,
+	MainPower,
 	Bright,
 	Ct,
 	RGB,

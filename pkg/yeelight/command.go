@@ -4,13 +4,17 @@ import (
 	"fmt"
 )
 
+// Command represents command sent to the Yeelight device. Use C() to create a Command instance.
 type Command struct {
 	ID     int    `json:"id"`
 	Method Method `json:"method"`
-	Params []any  `json:"params"`
+	Params any    `json:"params"`
 }
 
 func C(method Method, params ...any) Command {
+	if len(params) == 0 {
+		params = []any{}
+	}
 	return Command{
 		Method: method,
 		Params: params,
@@ -18,11 +22,11 @@ func C(method Method, params ...any) Command {
 }
 
 type Response struct {
-	ID     int              `json:"id"`
-	Method Method           `json:"method"`
-	Params map[Property]any `json:"params"`
-	Result []any            `json:"result"`
-	Error  *Error           `json:"error,omitempty"`
+	ID     int      `json:"id"`
+	Method Method   `json:"method"`
+	Params Data     `json:"params"`
+	Result []string `json:"result"`
+	Error  *Error   `json:"error,omitempty"`
 }
 
 type Error struct {

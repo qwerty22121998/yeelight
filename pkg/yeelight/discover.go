@@ -11,9 +11,7 @@ import (
 )
 
 const DefaultSPSDAddress = "239.255.255.250:1982"
-const DefaultTimeout = 5 * time.Second
-
-const discoverMsg = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1982\r\nMAN: \"ssdp:discover\"\r\nST: wifi_bulb"
+const DefaultTimeout = 2 * time.Second
 
 type DiscoverConfig struct {
 	SSDPAddress string
@@ -56,7 +54,7 @@ func parseResponse(ip string, data []byte) (*Info, error) {
 	return prop, nil
 }
 
-func Discover(ctx context.Context, conf *DiscoverConfig) ([]*Yeelight, error) {
+func Discover(ctx context.Context, conf *DiscoverConfig) ([]*Device, error) {
 	if conf == nil {
 		conf = &DiscoverConfig{}
 	}
@@ -105,7 +103,7 @@ func Discover(ctx context.Context, conf *DiscoverConfig) ([]*Yeelight, error) {
 		propMp[props.IP] = props
 		slog.Info("discovered", "ip", props.IP, "model", props.Model)
 	}
-	var devices []*Yeelight
+	var devices []*Device
 	for _, prop := range propMp {
 		device, err := New(ctx, prop)
 		if err != nil {
