@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net"
 	"strconv"
 	"sync"
@@ -18,11 +17,9 @@ const respWaitTimeout = 5 * time.Second
 type Device struct {
 	*Info
 
-	Data Data `json:"data"`
-
-	logger *slog.Logger // logger for debugging and error reporting
-	con    net.Conn     // TCP connection
-	done   chan struct{}
+	Data Data     `json:"data"`
+	con  net.Conn // TCP connection
+	done chan struct{}
 
 	mu          sync.RWMutex
 	baseID      int
@@ -38,7 +35,6 @@ func New(ctx context.Context, info *Info) (*Device, error) {
 	}
 	d := &Device{
 		Info:        info,
-		logger:      slog.Default(),
 		con:         con,
 		done:        make(chan struct{}),
 		mu:          sync.RWMutex{},
@@ -62,9 +58,9 @@ func (d *Device) Close() error {
 
 // SendCommand sends a command to the Yeelight device and waits for the corresponding response. It generates a unique command ID if one is not provided, marshals the command into JSON format, and writes it to the TCP connection. The function then waits for a response with the same command ID using the notification handler. If a response is received within the timeout period, it returns the response; otherwise, it returns an error indicating a timeout.
 func (d *Device) SendCommand(ctx context.Context, cmd Command) (*Response, error) {
-	//if ok := d.Methods[cmd.Method]; !ok {
-	//	return nil, fmt.Errorf("unsupported method: %s", cmd.Method)
-	//}
+	if ok := d.Methods[cmd.Method]; !ok {
+		return nil, fmt.Errorf("unsupported method: %s", cmd.Method)
+	}
 	if cmd.ID == 0 {
 		cmd.ID = d.genID()
 	}
@@ -72,7 +68,6 @@ func (d *Device) SendCommand(ctx context.Context, cmd Command) (*Response, error
 		cmd.Params = []any{}
 	}
 	jsonData, err := json.Marshal(cmd)
-	d.logger.InfoContext(ctx, "Send message", "command", jsonData)
 	if err != nil {
 		return nil, err
 	}
@@ -161,14 +156,11 @@ func (d *Device) receiveResponse(ctx context.Context) {
 		default:
 			data, err := reader.ReadString('\n')
 			if err != nil {
-				slog.ErrorContext(ctx, "Error reading response", "error", err)
 				return
 			}
-			slog.InfoContext(ctx, "Receive message", "data", string(data))
 			var resp Response
 			err = json.Unmarshal([]byte(data), &resp)
 			if err != nil {
-				slog.ErrorContext(ctx, "Error parsing response", "error", err)
 				continue
 			}
 			d.pushResponse(ctx, resp)
@@ -177,7 +169,6 @@ func (d *Device) receiveResponse(ctx context.Context) {
 }
 
 func (d *Device) updateData(ctx context.Context, data Data) {
-	slog.InfoContext(ctx, "Update device data", "data", data)
 	if data.Power != nil {
 		d.Data.Power = data.Power
 	}
@@ -327,6 +318,5 @@ func (d *Device) FetchProps(ctx context.Context) error {
 			}
 		}
 	}
-	slog.InfoContext(ctx, "Fetched device properties", "data", d.Data)
 	return nil
 }

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"time"
 	"yeelight/pkg/yeelight"
 
 	"github.com/therecipe/qt/core"
@@ -9,11 +12,11 @@ import (
 )
 
 type UI struct {
-	devices       []*yeelight.Device
-	setting       *Setting
-	devicesTab    *widgets.QTabWidget
-	root          *widgets.QMainWindow
-	loadingDialog *widgets.QDialog
+	devices         []*yeelight.Device
+	setting         *Setting
+	devicesTab      *widgets.QTabWidget
+	root            *widgets.QMainWindow
+	loadingProgress *widgets.QProgressBar
 }
 
 func NewYeelightUI(root *widgets.QMainWindow) *UI {
@@ -27,25 +30,32 @@ func NewYeelightUI(root *widgets.QMainWindow) *UI {
 	}
 	ui.setting.DiscoverConfig.Sanitize()
 
-	loadingDialog := widgets.NewQDialog(root, core.Qt__Dialog|core.Qt__WindowStaysOnTopHint)
-	loadingDialogLayout := widgets.NewQVBoxLayout()
-	loadingDialog.SetLayout(loadingDialogLayout)
-	loadingDialog.SetModal(true)
-	loadingLabel := widgets.NewQLabel2("Loading...", nil, 0)
-	loadingDialogLayout.AddWidget(loadingLabel, 1, core.Qt__AlignCenter)
-	ui.loadingDialog = loadingDialog
-
 	return ui
 }
 
-func (ui *UI) setLoading(isLoading bool) {
-	if isLoading {
-		ui.loadingDialog.Show()
-		ui.root.SetDisabled(isLoading)
-		return
+func (ui *UI) loadingTimeout(ctx context.Context, dur time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, dur)
+	defer cancel()
+	ui.root.SetDisabled(true)
+	defer ui.root.SetDisabled(false)
+
+	progressStepDur := time.Millisecond * 500
+	t := time.NewTicker(progressStepDur)
+	fmt.Println("total steps:", int(dur/progressStepDur))
+	ui.loadingProgress.SetMaximum(int(dur / progressStepDur))
+	step := 1
+	ui.loadingProgress.SetValue(step)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			step++
+			fmt.Println("step:", step)
+			ui.loadingProgress.SetValue(step)
+		case <-ctx.Done():
+			return
+		}
 	}
-	ui.loadingDialog.Hide()
-	ui.root.SetDisabled(isLoading)
 }
 
 func (ui *UI) devicesUI() widgets.QWidget_ITF {
@@ -58,8 +68,10 @@ func (ui *UI) reRenderDevices(ctx context.Context) {
 	ui.devicesTab.Clear()
 	for _, device := range ui.devices {
 		if err := device.FetchProps(ctx); err != nil {
+			slog.Error("Failed to fetch device properties", "ip", device.IP, "error", err)
 			continue
 		}
+		slog.Info("Device found", "ip", device.IP, "model", device.Model)
 		deviceUi := NewDeviceUI(ctx, device, ui.setting)
 		ui.devicesTab.AddTab(deviceUi, device.IP)
 	}
@@ -69,8 +81,8 @@ func (ui *UI) scan(ctx context.Context) {
 	for _, device := range ui.devices {
 		device.Close()
 	}
-	ui.setLoading(true)
-	defer ui.setLoading(false)
+
+	go ui.loadingTimeout(ctx, ui.setting.DiscoverConfig.Timeout)
 	devices, err := yeelight.Discover(ctx, ui.setting.DiscoverConfig)
 	if err != nil {
 		return
@@ -81,13 +93,18 @@ func (ui *UI) scan(ctx context.Context) {
 
 func (ui *UI) functionBtnUI(ctx context.Context) widgets.QWidget_ITF {
 	widget := widgets.NewQWidget(nil, core.Qt__Widget)
-	layout := widgets.NewQHBoxLayout()
+	layout := widgets.NewQGridLayout2()
 	widget.SetLayout(layout)
 	scanDeviceBtn := widgets.NewQPushButton2("Scan Device", nil)
 	scanDeviceBtn.ConnectClicked(func(checked bool) {
 		go ui.scan(ctx)
 	})
-	layout.AddWidget(scanDeviceBtn, 1, core.Qt__AlignLeft)
+
+	loading := widgets.NewQProgressBar(nil)
+	ui.loadingProgress = loading
+
+	layout.AddWidget2(scanDeviceBtn, 0, 0, 0)
+	layout.AddWidget2(loading, 0, 1, 0)
 	return widget
 }
 
