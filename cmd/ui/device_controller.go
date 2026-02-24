@@ -13,26 +13,27 @@ const updateInterval = time.Second / 2
 
 type DeviceUI struct {
 	*widgets.QWidget
-	device  *yeelight.Device
-	setting *Setting
-	layout  *widgets.QHBoxLayout
+	device       *yeelight.Device
+	setting      *Setting
+	layout       *widgets.QGridLayout
+	mainLight    *lightUI
+	ambientLight *lightUI
+	info         *infoUI
+}
 
-	mlWidget *widgets.QScrollArea
-	mlLayout *widgets.QFormLayout
-	alWidget *widgets.QScrollArea
-	alLayout *widgets.QFormLayout
+type lightUI struct {
+	Widget           *widgets.QGroupBox
+	Layout           *widgets.QFormLayout
+	PowerBtn         *widgets.QPushButton
+	BrightnessSlider *widgets.QSlider
+	CTSlider         *widgets.QSlider
+	ColorDialog      *widgets.QColorDialog
+	ColorBtn         *widgets.QPushButton
+}
 
-	mlPower       *widgets.QPushButton
-	mlBrightness  *widgets.QSlider
-	mlCt          *widgets.QSlider
-	mlColorDialog *widgets.QColorDialog
-	mlColor       *widgets.QPushButton
-
-	alPower       *widgets.QPushButton
-	alBrightness  *widgets.QSlider
-	alCt          *widgets.QSlider
-	alColorDialog *widgets.QColorDialog
-	alColor       *widgets.QPushButton
+type infoUI struct {
+	Widget *widgets.QGroupBox
+	Layout *widgets.QFormLayout
 }
 
 func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting) *DeviceUI {
@@ -42,19 +43,23 @@ func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting)
 	}
 
 	ui.QWidget = widgets.NewQWidget(nil, 0)
-	ui.layout = widgets.NewQHBoxLayout()
+	ui.layout = widgets.NewQGridLayout2()
 	ui.QWidget.SetLayout(ui.layout)
 
-	ui.initML(ctx)
-	ui.initAL(ctx)
-	ui.layout.AddWidget(ui.mlWidget, 1, 0)
-	ui.layout.AddWidget(ui.alWidget, 1, 0)
+	ui.renderMainLight(ctx)
+	ui.renderAmbientLight(ctx)
+	ui.renderInfo(ctx)
+	ui.layout.AddWidget2(ui.mainLight.Widget, 0, 0, 0)
+	ui.layout.AddWidget2(ui.ambientLight.Widget, 1, 0, 0)
+	ui.layout.AddWidget3(ui.info.Widget, 0, 1, 2, 1, 0)
 
 	ui.update()
 	updated := device.Updated()
 	go func() {
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-updated:
 				ui.update()
 			}
@@ -65,39 +70,65 @@ func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting)
 }
 
 func (d *DeviceUI) update() {
-	if d.mlBrightness != nil {
-		d.mlBrightness.SetValue(*d.device.Data.Bright)
+	if allNotNil(d.mainLight.BrightnessSlider, d.device.Data.Bright) {
+		d.mainLight.BrightnessSlider.SetValue(*d.device.Data.Bright)
 	}
-	if d.mlCt != nil {
-		d.mlCt.SetValue(*d.device.Data.Ct)
-	}
-	if d.mlColor != nil {
-		d.mlColor.SetStyleSheet("background-color: " + colorIntToRGB(*d.device.Data.RGB))
+	if allNotNil(d.mainLight.CTSlider, d.device.Data.Ct) {
+		d.mainLight.CTSlider.SetValue(*d.device.Data.Ct)
 	}
 
-	if d.alBrightness != nil {
-		d.alBrightness.SetValue(*d.device.Data.BgBright)
+	if allNotNil(d.mainLight.ColorBtn, d.device.Data.RGB) {
+		d.mainLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(*d.device.Data.RGB))
 	}
 
-	if d.alCt != nil {
-		d.alCt.SetValue(*d.device.Data.BgCt)
+	if allNotNil(d.ambientLight.BrightnessSlider, d.device.Data.BgBright) {
+		d.ambientLight.BrightnessSlider.SetValue(*d.device.Data.BgBright)
 	}
 
-	if d.alColor != nil {
-		d.alColor.SetStyleSheet("background-color: " + colorIntToRGB(*d.device.Data.BgRGB))
+	if allNotNil(d.ambientLight.CTSlider, d.device.Data.BgCt) {
+		d.ambientLight.CTSlider.SetValue(*d.device.Data.BgCt)
+	}
+
+	if allNotNil(d.ambientLight.ColorBtn, d.device.Data.BgRGB) {
+		d.ambientLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(*d.device.Data.BgRGB))
 	}
 }
 
-func (d *DeviceUI) initML(ctx context.Context) {
-	d.mlWidget = widgets.NewQScrollArea(nil)
-	d.mlLayout = widgets.NewQFormLayout(nil)
-	d.mlWidget.SetLayout(d.mlLayout)
+func (d *DeviceUI) renderInfo(ctx context.Context) {
+	info := &infoUI{}
+
+	info.Widget = widgets.NewQGroupBox2("Info", nil)
+	sa := widgets.NewQScrollArea(nil)
+	sa.SetWidgetResizable(true)
+	info.Widget.Layout().AddWidget(sa)
+	info.Layout = widgets.NewQFormLayout(nil)
+	info.Widget.SetLayout(info.Layout)
+
+	info.Layout.AddRow3("IP:", widgets.NewQLabel2(d.device.IP, nil, 0))
+	info.Layout.AddRow3("Name:", widgets.NewQLabel2(d.device.Name, nil, 0))
+	info.Layout.AddRow3("ID:", widgets.NewQLabel2(d.device.ID, nil, 0))
+	info.Layout.AddRow3("Model:", widgets.NewQLabel2(d.device.Model, nil, 0))
+	info.Layout.AddRow3("Firmware version:", widgets.NewQLabel2(d.device.FWVersion, nil, 0))
+
+	d.info = info
+}
+
+func (d *DeviceUI) renderMainLight(ctx context.Context) {
+
+	mainLight := &lightUI{}
+
+	mainLight.Widget = widgets.NewQGroupBox2("Main Light", nil)
+	sa := widgets.NewQScrollArea(nil)
+	sa.SetWidgetResizable(true)
+	mainLight.Widget.Layout().AddWidget(sa)
+	mainLight.Layout = widgets.NewQFormLayout(nil)
+	mainLight.Widget.SetLayout(mainLight.Layout)
 
 	if d.device.Methods[yeelight.SetPower] {
-		d.mlPower = widgets.NewQPushButton2("Toggle", nil)
-		d.mlLayout.AddRow3("Power", d.mlPower)
+		mainLight.PowerBtn = widgets.NewQPushButton2("Toggle", nil)
+		mainLight.Layout.AddRow3("Power", mainLight.PowerBtn)
 
-		d.mlPower.ConnectClicked(func(_ bool) {
+		mainLight.PowerBtn.ConnectClicked(func(_ bool) {
 			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.Toggle))
 			if err != nil {
 
@@ -106,47 +137,52 @@ func (d *DeviceUI) initML(ctx context.Context) {
 	}
 
 	if d.device.Methods[yeelight.SetBright] {
-		d.mlBrightness = widgets.NewQSlider2(core.Qt__Horizontal, nil)
-		d.mlBrightness.SetRange(1, 100)
-		d.mlBrightness.ConnectSliderReleased(func() {
-			value := d.mlBrightness.Value()
+		mainLight.BrightnessSlider = widgets.NewQSlider2(core.Qt__Horizontal, nil)
+		mainLight.BrightnessSlider.SetRange(1, 100)
+		mainLight.BrightnessSlider.ConnectSliderReleased(func() {
+			value := mainLight.BrightnessSlider.Value()
 			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.SetBright, value, d.setting.Effect, d.setting.EffectDuration))
 			if err != nil {
-				d.mlBrightness.SetValue(*d.device.Data.Bright)
+				mainLight.BrightnessSlider.SetValue(*d.device.Data.Bright)
 				return
 			}
 		})
 
-		d.mlLayout.AddRow3("Brightness", d.mlBrightness)
+		mainLight.Layout.AddRow3("Brightness", mainLight.BrightnessSlider)
 	}
 
 	if d.device.Methods[yeelight.SetCtAbx] {
-		d.mlCt = widgets.NewQSlider2(core.Qt__Horizontal, nil)
-		d.mlCt.SetRange(1700, 6500)
-		d.mlCt.ConnectSliderReleased(func() {
-			value := d.mlCt.Value()
+		mainLight.CTSlider = widgets.NewQSlider2(core.Qt__Horizontal, nil)
+		mainLight.CTSlider.SetRange(1700, 6500)
+		mainLight.CTSlider.ConnectSliderReleased(func() {
+			value := mainLight.CTSlider.Value()
 			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.SetCtAbx, value, d.setting.Effect, d.setting.EffectDuration))
 			if err != nil {
-				d.mlCt.SetValue(*d.device.Data.Ct)
+				mainLight.CTSlider.SetValue(*d.device.Data.Ct)
 				return
 			}
 		})
 
-		d.mlLayout.AddRow3("Color Temperature", d.mlCt)
+		mainLight.Layout.AddRow3("Color Temperature", mainLight.CTSlider)
 	}
 
+	d.mainLight = mainLight
 }
 
-func (d *DeviceUI) initAL(ctx context.Context) {
-	d.alWidget = widgets.NewQScrollArea(nil)
-	d.alLayout = widgets.NewQFormLayout(nil)
-	d.alWidget.SetLayout(d.alLayout)
+func (d *DeviceUI) renderAmbientLight(ctx context.Context) {
+	ambientLight := &lightUI{}
+	ambientLight.Widget = widgets.NewQGroupBox2("Ambient Light", nil)
+	sa := widgets.NewQScrollArea(nil)
+	sa.SetWidgetResizable(true)
+	ambientLight.Widget.Layout().AddWidget(sa)
+	ambientLight.Layout = widgets.NewQFormLayout(nil)
+	ambientLight.Widget.SetLayout(ambientLight.Layout)
 
 	if d.device.Methods[yeelight.BgSetPower] {
-		d.alPower = widgets.NewQPushButton2("Toggle", nil)
-		d.alLayout.AddRow3("Power", d.alPower)
+		ambientLight.PowerBtn = widgets.NewQPushButton2("Toggle", nil)
+		ambientLight.Layout.AddRow3("Power", ambientLight.PowerBtn)
 
-		d.alPower.ConnectClicked(func(_ bool) {
+		ambientLight.PowerBtn.ConnectClicked(func(_ bool) {
 			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgToggle))
 			if err != nil {
 
@@ -156,39 +192,39 @@ func (d *DeviceUI) initAL(ctx context.Context) {
 	}
 
 	if d.device.Methods[yeelight.BgSetBright] {
-		d.alBrightness = widgets.NewQSlider2(core.Qt__Horizontal, nil)
-		d.alBrightness.SetRange(1, 100)
-		d.alLayout.AddRow3("Brightness", d.alBrightness)
+		ambientLight.BrightnessSlider = widgets.NewQSlider2(core.Qt__Horizontal, nil)
+		ambientLight.BrightnessSlider.SetRange(1, 100)
+		ambientLight.Layout.AddRow3("Brightness", ambientLight.BrightnessSlider)
 
-		d.alBrightness.ConnectSliderReleased(func() {
-			value := d.alBrightness.Value()
+		ambientLight.BrightnessSlider.ConnectSliderReleased(func() {
+			value := ambientLight.BrightnessSlider.Value()
 			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgSetBright, value, d.setting.Effect, d.setting.EffectDuration))
 			if err != nil {
-				d.alBrightness.SetValue(*d.device.Data.BgBright)
+				ambientLight.BrightnessSlider.SetValue(*d.device.Data.BgBright)
 				return
 			}
 		})
 	}
 
 	if d.device.Methods[yeelight.BgSetCtAbx] {
-		d.alCt = widgets.NewQSlider2(core.Qt__Horizontal, nil)
-		d.alCt.SetRange(1700, 6500)
-		d.alLayout.AddRow3("Color Temperature", d.alCt)
+		ambientLight.CTSlider = widgets.NewQSlider2(core.Qt__Horizontal, nil)
+		ambientLight.CTSlider.SetRange(1700, 6500)
+		ambientLight.Layout.AddRow3("Color Temperature", ambientLight.CTSlider)
 
-		d.alCt.ConnectSliderReleased(func() {
-			value := d.alCt.Value()
+		ambientLight.CTSlider.ConnectSliderReleased(func() {
+			value := ambientLight.CTSlider.Value()
 			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgSetCtAbx, value, d.setting.Effect, d.setting.EffectDuration))
 			if err != nil {
-				d.alCt.SetValue(*d.device.Data.BgCt)
+				ambientLight.CTSlider.SetValue(*d.device.Data.BgCt)
 				return
 			}
 		})
 	}
 
 	if d.device.Methods[yeelight.BgSetRGB] {
-		d.alColorDialog = widgets.NewQColorDialog(nil)
-		d.alColorDialog.ConnectAccepted(func() {
-			color := d.alColorDialog.CurrentColor()
+		ambientLight.ColorDialog = widgets.NewQColorDialog(nil)
+		ambientLight.ColorDialog.ConnectAccepted(func() {
+			color := ambientLight.ColorDialog.CurrentColor()
 			r, g, b := color.Red(), color.Green(), color.Blue()
 			colorInt := rgbToColorInt(int(r), int(g), int(b))
 			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgSetRGB, colorInt, d.setting.Effect, d.setting.EffectDuration))
@@ -198,12 +234,13 @@ func (d *DeviceUI) initAL(ctx context.Context) {
 
 		})
 
-		d.alColor = widgets.NewQPushButton(nil)
-		d.alColor.ConnectClicked(func(checked bool) {
-			d.alColorDialog.Exec()
+		ambientLight.ColorBtn = widgets.NewQPushButton(nil)
+		ambientLight.ColorBtn.ConnectClicked(func(checked bool) {
+			ambientLight.ColorDialog.Exec()
 		})
 
-		d.alLayout.AddRow3("Color", d.alColor)
+		ambientLight.Layout.AddRow3("Color", ambientLight.ColorBtn)
 	}
 
+	d.ambientLight = ambientLight
 }

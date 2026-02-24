@@ -49,6 +49,10 @@ func parseResponse(ip string, data []byte) (*Info, error) {
 			for _, method := range methods {
 				prop.Methods[Method(method)] = true
 			}
+		case "fw_ver":
+			prop.FWVersion = value
+		case "name":
+			prop.Name = value
 		}
 	}
 	return prop, nil
@@ -92,6 +96,7 @@ func Discover(ctx context.Context, conf *DiscoverConfig) ([]*Device, error) {
 			}
 			return nil, err
 		}
+		slog.InfoContext(ctx, "response received", "ip", addr.IP.String(), "data", string(buffer))
 		props, err := parseResponse(addr.IP.String(), buffer)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to parse response", "ip", addr.IP.String(), "error", err)

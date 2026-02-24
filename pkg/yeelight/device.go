@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync"
@@ -42,7 +43,7 @@ func New(ctx context.Context, info *Info) (*Device, error) {
 		pending:     make(map[int]chan Response),
 		updatedChan: make(chan struct{}),
 	}
-	go d.receiveResponse(ctx)
+	go d.listen(ctx)
 	return d, nil
 }
 
@@ -68,6 +69,7 @@ func (d *Device) SendCommand(ctx context.Context, cmd Command) (*Response, error
 		cmd.Params = []any{}
 	}
 	jsonData, err := json.Marshal(cmd)
+	slog.InfoContext(ctx, "Sending command", "command", string(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -140,8 +142,8 @@ func (d *Device) genID() int {
 	return d.baseID
 }
 
-// receiveResponse continuously listens for responses from the Yeelight device. It reads data from the TCP connection, parses it as JSON, and pushes the responses to the notification handler. The function runs until the context is canceled, at which point it closes the connection and stops listening for responses.
-func (d *Device) receiveResponse(ctx context.Context) {
+// listen continuously listens for responses from the Yeelight device. It reads data from the TCP connection, parses it as JSON, and pushes the responses to the notification handler. The function runs until the context is canceled, at which point it closes the connection and stops listening for responses.
+func (d *Device) listen(ctx context.Context) {
 	defer d.con.Close()
 	reader := bufio.NewReader(d.con)
 	for {
@@ -155,6 +157,7 @@ func (d *Device) receiveResponse(ctx context.Context) {
 			return
 		default:
 			data, err := reader.ReadString('\n')
+			slog.InfoContext(ctx, "Received data", "data", data)
 			if err != nil {
 				return
 			}
@@ -169,72 +172,7 @@ func (d *Device) receiveResponse(ctx context.Context) {
 }
 
 func (d *Device) updateData(ctx context.Context, data Data) {
-	if data.Power != nil {
-		d.Data.Power = data.Power
-	}
-	if data.MainPower != nil {
-		d.Data.MainPower = data.MainPower
-	}
-	if data.Bright != nil {
-		d.Data.Bright = data.Bright
-	}
-	if data.Ct != nil {
-		d.Data.Ct = data.Ct
-	}
-	if data.RGB != nil {
-		d.Data.RGB = data.RGB
-	}
-	if data.Hue != nil {
-		d.Data.Hue = data.Hue
-	}
-	if data.Sat != nil {
-		d.Data.Sat = data.Sat
-	}
-	if data.ColorMode != nil {
-		d.Data.ColorMode = data.ColorMode
-	}
-	if data.Flowing != nil {
-		d.Data.Flowing = data.Flowing
-	}
-	if data.DelayOff != nil {
-		d.Data.DelayOff = data.DelayOff
-	}
-	if data.MusicOn != nil {
-		d.Data.MusicOn = data.MusicOn
-	}
-	if data.Name != nil {
-		d.Data.Name = data.Name
-	}
-	if data.BgPower != nil {
-		d.Data.BgPower = data.BgPower
-	}
-	if data.BgFlowing != nil {
-		d.Data.BgFlowing = data.BgFlowing
-	}
-	if data.BgFlowParams != nil {
-		d.Data.BgFlowParams = data.BgFlowParams
-	}
-	if data.BgCt != nil {
-		d.Data.BgCt = data.BgCt
-	}
-	if data.BgLMode != nil {
-		d.Data.BgLMode = data.BgLMode
-	}
-	if data.BgBright != nil {
-		d.Data.BgBright = data.BgBright
-	}
-	if data.BgRGB != nil {
-		d.Data.BgRGB = data.BgRGB
-	}
-	if data.BgSat != nil {
-		d.Data.BgSat = data.BgSat
-	}
-	if data.NLBr != nil {
-		d.Data.NLBr = data.NLBr
-	}
-	if data.ActiveMode != nil {
-		d.Data.ActiveMode = data.ActiveMode
-	}
+	mergeData(&d.Data, &data)
 
 	select {
 	case d.updatedChan <- struct{}{}:
@@ -299,6 +237,8 @@ func (d *Device) FetchProps(ctx context.Context) error {
 				d.Data.NLBr = Ptr(intValue)
 			case ActiveMode:
 				d.Data.ActiveMode = Ptr(intValue)
+			case BGProact:
+				d.Data.BGProact = Ptr(intValue)
 			}
 		default:
 			value = resp.Result[i]

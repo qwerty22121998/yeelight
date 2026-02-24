@@ -79,6 +79,7 @@ const (
 	BgSat        Property = "bg_sat"
 	NlBr         Property = "nl_br"
 	ActiveMode   Property = "active_mode"
+	BGProact     Property = "bg_proact"
 )
 
 var AllProperties = []Property{
