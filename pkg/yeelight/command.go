@@ -1,6 +1,7 @@
 package yeelight
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -36,4 +37,16 @@ type Error struct {
 
 func (e *Error) Error() string {
 	return fmt.Sprintf("Code: %d, Message: %s", e.Code, e.Message)
+}
+
+// unsupportedCode is the error code a device returns for a method it does not
+// implement: {"error":{"code":-1,"message":"method not supported"}}.
+const unsupportedCode = -1
+
+// IsUnsupported reports whether err is a device reply saying the method is not
+// supported (as opposed to a timeout, transport failure, or other error). Use
+// it to attempt a method without trusting the advertised support list.
+func IsUnsupported(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Code == unsupportedCode
 }

@@ -8,3 +8,6 @@ build/
 # built binaries
 /qtbox
 /ui
+
+# vendored binary spec (keep docs/yeelight-spec.md, not the PDF blob)
+docs/*.pdf
