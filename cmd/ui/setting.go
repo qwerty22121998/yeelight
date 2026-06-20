@@ -7,10 +7,33 @@ import (
 	"github.com/therecipe/qt/widgets"
 )
 
+const defaultSyncInterval = 1000
+
 type Setting struct {
 	DiscoverConfig *yeelight.DiscoverConfig
 	Effect         yeelight.Effect
 	EffectDuration int
+	Sync           map[string]*DeviceSync // per-device screen-sync config, keyed by device ID
+}
+
+// DeviceSync is one device's screen-sync config, persisted per device.
+type DeviceSync struct {
+	Enabled     bool
+	ScreenIndex int
+	Interval    int // poll interval, ms
+}
+
+// SyncFor returns the screen-sync config for device id, creating a default if absent.
+func (s *Setting) SyncFor(id string) *DeviceSync {
+	if s.Sync == nil {
+		s.Sync = map[string]*DeviceSync{}
+	}
+	cfg := s.Sync[id]
+	if cfg == nil {
+		cfg = &DeviceSync{Interval: defaultSyncInterval}
+		s.Sync[id] = cfg
+	}
+	return cfg
 }
 
 type SettingUI struct {
@@ -37,6 +60,7 @@ func (ui *SettingUI) initDiscover() {
 	ssdpAddr := widgets.NewQLineEdit2(ui.setting.DiscoverConfig.SSDPAddress, nil)
 	ssdpAddr.ConnectTextChanged(func(text string) {
 		ui.setting.DiscoverConfig.SSDPAddress = text
+		ui.setting.Save()
 	})
 	dConfLayout.AddRow3("SSDP Address", ssdpAddr)
 
@@ -45,8 +69,18 @@ func (ui *SettingUI) initDiscover() {
 	dTimeout.SetValue(int(ui.setting.DiscoverConfig.Timeout / time.Second))
 	dTimeout.ConnectValueChanged(func(value int) {
 		ui.setting.DiscoverConfig.Timeout = time.Duration(value) * time.Second
+		ui.setting.Save()
 	})
 	dConfLayout.AddRow3("Timeout (s)", dTimeout)
+
+	listenPort := widgets.NewQSpinBox(nil)
+	listenPort.SetRange(1, 65535)
+	listenPort.SetValue(ui.setting.DiscoverConfig.ListenPort)
+	listenPort.ConnectValueChanged(func(value int) {
+		ui.setting.DiscoverConfig.ListenPort = value
+		ui.setting.Save()
+	})
+	dConfLayout.AddRow3("Listen Port", listenPort)
 
 	ui.QTabWidget.AddTab(dConfWidget, "Discover")
 }
@@ -62,6 +96,7 @@ func (ui *SettingUI) initEffect() {
 	effectCombo.SetCurrentText(string(ui.setting.Effect))
 	effectCombo.ConnectCurrentTextChanged(func(text string) {
 		ui.setting.Effect = yeelight.Effect(text)
+		ui.setting.Save()
 	})
 	dEffectLayout.AddRow3("Effect", effectCombo)
 
@@ -70,6 +105,7 @@ func (ui *SettingUI) initEffect() {
 	durationSpin.SetValue(ui.setting.EffectDuration)
 	durationSpin.ConnectValueChanged(func(value int) {
 		ui.setting.EffectDuration = value
+		ui.setting.Save()
 	})
 	dEffectLayout.AddRow3("Effect Duration (ms)", durationSpin)
 

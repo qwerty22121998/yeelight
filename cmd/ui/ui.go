@@ -17,6 +17,8 @@ type UI struct {
 	devicesTab      *widgets.QTabWidget
 	root            *widgets.QMainWindow
 	loadingProgress *widgets.QProgressBar
+	tray            *widgets.QSystemTrayIcon
+	firewallTried   bool
 }
 
 func NewYeelightUI(root *widgets.QMainWindow) *UI {
@@ -25,10 +27,12 @@ func NewYeelightUI(root *widgets.QMainWindow) *UI {
 			DiscoverConfig: &yeelight.DiscoverConfig{},
 			Effect:         yeelight.EffectSmooth,
 			EffectDuration: 500,
+			Sync:           map[string]*DeviceSync{},
 		},
 		root: root,
 	}
 	ui.setting.DiscoverConfig.Sanitize()
+	ui.setting.Load()
 
 	return ui
 }
@@ -87,6 +91,17 @@ func (ui *UI) scan(ctx context.Context) {
 	if err != nil {
 		return
 	}
+
+	// Found nothing and haven't touched the firewall yet: the inbound reply
+	// port may be blocked. Open it (this is what triggers the auth prompt) and
+	// rescan once. When devices are already reachable we never prompt.
+	if len(devices) == 0 && !ui.firewallTried {
+		ui.firewallTried = true
+		yeelight.EnsureFirewallPort(ctx, ui.setting.DiscoverConfig.ListenPort)
+		go ui.loadingTimeout(ctx, ui.setting.DiscoverConfig.Timeout)
+		devices, _ = yeelight.Discover(ctx, ui.setting.DiscoverConfig)
+	}
+
 	ui.devices = devices
 	ui.reRenderDevices(ctx)
 }
@@ -100,12 +115,51 @@ func (ui *UI) functionBtnUI(ctx context.Context) widgets.QWidget_ITF {
 		go ui.scan(ctx)
 	})
 
+	hideBtn := widgets.NewQPushButton2("Hide to Tray", nil)
+	hideBtn.ConnectClicked(func(checked bool) {
+		ui.root.Hide()
+	})
+
 	loading := widgets.NewQProgressBar(nil)
 	ui.loadingProgress = loading
 
 	layout.AddWidget2(scanDeviceBtn, 0, 0, 0)
-	layout.AddWidget2(loading, 0, 1, 0)
+	layout.AddWidget2(hideBtn, 0, 1, 0)
+	layout.AddWidget2(loading, 0, 2, 0)
 	return widget
+}
+
+// initTray adds a system-tray icon so the window can be hidden and restored.
+// QSystemTrayIcon works on X11 (XEmbed) and Wayland (StatusNotifierItem over
+// DBus). ponytail: on Wayland it needs an SNI host running (e.g. waybar's tray
+// module on Hyprland); without one the icon won't appear — restore via the
+// taskbar or relaunch.
+func (ui *UI) initTray(root *widgets.QMainWindow) {
+	if !widgets.QSystemTrayIcon_IsSystemTrayAvailable() {
+		slog.Warn("system tray unavailable; need an SNI host (e.g. waybar tray) on Wayland")
+	}
+	icon := widgets.QApplication_Style().StandardIcon(widgets.QStyle__SP_ComputerIcon, nil, nil)
+	tray := widgets.NewQSystemTrayIcon2(icon, root)
+	tray.SetToolTip("Yeelight")
+
+	restore := func() {
+		root.ShowNormal()
+		root.Raise()
+		root.ActivateWindow()
+	}
+
+	menu := widgets.NewQMenu(nil)
+	menu.AddAction("Show").ConnectTriggered(func(bool) { restore() })
+	menu.AddAction("Quit").ConnectTriggered(func(bool) { core.QCoreApplication_Exit(0) })
+	tray.SetContextMenu(menu)
+
+	tray.ConnectActivated(func(reason widgets.QSystemTrayIcon__ActivationReason) {
+		if reason == widgets.QSystemTrayIcon__Trigger || reason == widgets.QSystemTrayIcon__DoubleClick {
+			restore()
+		}
+	})
+	tray.Show()
+	ui.tray = tray
 }
 
 func (ui *UI) RenderMain(ctx context.Context, root *widgets.QMainWindow) {
@@ -123,4 +177,5 @@ func (ui *UI) RenderMain(ctx context.Context, root *widgets.QMainWindow) {
 
 	root.SetCentralWidget(widget)
 
+	ui.initTray(root)
 }

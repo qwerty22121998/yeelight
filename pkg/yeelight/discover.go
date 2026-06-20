@@ -13,9 +13,14 @@ import (
 const DefaultSPSDAddress = "239.255.255.250:1982"
 const DefaultTimeout = 2 * time.Second
 
+// DefaultListenPort is the fixed local UDP port bound for discovery so SSDP
+// unicast replies arrive on a stable port that can be allowed in the firewall.
+const DefaultListenPort = 19820
+
 type DiscoverConfig struct {
 	SSDPAddress string
 	Timeout     time.Duration
+	ListenPort  int
 }
 
 func (d *DiscoverConfig) Sanitize() {
@@ -24,6 +29,9 @@ func (d *DiscoverConfig) Sanitize() {
 	}
 	if d.Timeout == 0 {
 		d.Timeout = DefaultTimeout
+	}
+	if d.ListenPort == 0 {
+		d.ListenPort = DefaultListenPort
 	}
 }
 
@@ -68,7 +76,7 @@ func Discover(ctx context.Context, conf *DiscoverConfig) ([]*Device, error) {
 		return nil, err
 	}
 
-	conn, err := net.ListenUDP("udp", nil)
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: conf.ListenPort})
 	if err != nil {
 		return nil, err
 	}

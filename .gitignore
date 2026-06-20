@@ -1,2 +1,10 @@
 .idea
+.claude/
 build/
+
+# tooling cache
+.codegraph/
+
+# built binaries
+/qtbox
+/ui

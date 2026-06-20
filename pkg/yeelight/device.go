@@ -51,9 +51,13 @@ func (d *Device) Updated() <-chan struct{} {
 	return d.updatedChan
 }
 
+// Done is closed when the device is closed; watchers should select on it to exit.
+func (d *Device) Done() <-chan struct{} {
+	return d.done
+}
+
 func (d *Device) Close() error {
 	close(d.done)
-	close(d.updatedChan)
 	return d.con.Close()
 }
 
@@ -191,6 +195,9 @@ func (d *Device) FetchProps(ctx context.Context) error {
 		return err
 	}
 	for i, prop := range AllProperties {
+		if i >= len(resp.Result) {
+			break
+		}
 		value := resp.Result[i]
 		if value == "" {
 			continue
