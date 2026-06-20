@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"time"
 	"yeelight/pkg/yeelight"
 
 	"github.com/therecipe/qt/core"
@@ -37,29 +35,10 @@ func NewYeelightUI(root *widgets.QMainWindow) *UI {
 	return ui
 }
 
-func (ui *UI) loadingTimeout(ctx context.Context, dur time.Duration) {
-	ctx, cancel := context.WithTimeout(ctx, dur)
-	defer cancel()
-	ui.root.SetDisabled(true)
-	defer ui.root.SetDisabled(false)
-
-	progressStepDur := time.Millisecond * 500
-	t := time.NewTicker(progressStepDur)
-	fmt.Println("total steps:", int(dur/progressStepDur))
-	ui.loadingProgress.SetMaximum(int(dur / progressStepDur))
-	step := 1
-	ui.loadingProgress.SetValue(step)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			step++
-			fmt.Println("step:", step)
-			ui.loadingProgress.SetValue(step)
-		case <-ctx.Done():
-			return
-		}
-	}
+// showStatus shows a transient message in the window status bar. Safe from any
+// goroutine — it marshals to the GUI thread.
+func (ui *UI) showStatus(msg string) {
+	runOnUI(func() { ui.root.StatusBar().ShowMessage(msg, 5000) })
 }
 
 func (ui *UI) devicesUI() widgets.QWidget_ITF {
@@ -68,27 +47,66 @@ func (ui *UI) devicesUI() widgets.QWidget_ITF {
 	return devicesTab
 }
 
+// tabLabel prefers the device's friendly name, falling back to its IP.
+func tabLabel(d *yeelight.Device) string {
+	if d.Name != "" {
+		return d.Name
+	}
+	return d.IP
+}
+
+func emptyState() widgets.QWidget_ITF {
+	w := widgets.NewQWidget(nil, core.Qt__Widget)
+	l := widgets.NewQVBoxLayout()
+	w.SetLayout(l)
+	l.AddWidget(widgets.NewQLabel2(`No devices found. Click "Scan Device".`, nil, 0), 0, core.Qt__AlignCenter)
+	return w
+}
+
+// reRenderDevices fetches each device's props (network, slow — runs on the
+// caller's goroutine, never the GUI thread) then rebuilds the device tabs on
+// the GUI thread.
 func (ui *UI) reRenderDevices(ctx context.Context) {
-	ui.devicesTab.Clear()
+	ready := make([]*yeelight.Device, 0, len(ui.devices))
 	for _, device := range ui.devices {
 		if err := device.FetchProps(ctx); err != nil {
 			slog.Error("Failed to fetch device properties", "ip", device.IP, "error", err)
 			continue
 		}
 		slog.Info("Device found", "ip", device.IP, "model", device.Model)
-		deviceUi := NewDeviceUI(ctx, device, ui.setting)
-		ui.devicesTab.AddTab(deviceUi, device.IP)
+		ready = append(ready, device)
 	}
+
+	runOnUI(func() {
+		ui.devicesTab.Clear()
+		for _, device := range ready {
+			ui.devicesTab.AddTab(NewDeviceUI(ctx, device, ui.setting, ui.showStatus), tabLabel(device))
+		}
+		if len(ready) == 0 {
+			ui.devicesTab.AddTab(emptyState(), "No devices")
+		}
+	})
 }
 
 func (ui *UI) scan(ctx context.Context) {
+	runOnUI(func() {
+		ui.root.SetDisabled(true)
+		ui.loadingProgress.SetRange(0, 0) // 0..0 = indeterminate "busy" animation
+	})
+	defer runOnUI(func() {
+		ui.loadingProgress.SetRange(0, 1) // stop the busy animation
+		ui.loadingProgress.SetValue(0)
+		ui.root.SetDisabled(false)
+	})
+
 	for _, device := range ui.devices {
 		device.Close()
 	}
 
-	go ui.loadingTimeout(ctx, ui.setting.DiscoverConfig.Timeout)
 	devices, err := yeelight.Discover(ctx, ui.setting.DiscoverConfig)
 	if err != nil {
+		slog.Error("discovery failed", "error", err)
+		ui.showStatus("Scan failed: " + err.Error())
 		return
 	}
 
@@ -98,8 +116,11 @@ func (ui *UI) scan(ctx context.Context) {
 	if len(devices) == 0 && !ui.firewallTried {
 		ui.firewallTried = true
 		yeelight.EnsureFirewallPort(ctx, ui.setting.DiscoverConfig.ListenPort)
-		go ui.loadingTimeout(ctx, ui.setting.DiscoverConfig.Timeout)
 		devices, _ = yeelight.Discover(ctx, ui.setting.DiscoverConfig)
+	}
+
+	if len(devices) == 0 {
+		ui.showStatus("No devices found")
 	}
 
 	ui.devices = devices
@@ -121,6 +142,7 @@ func (ui *UI) functionBtnUI(ctx context.Context) widgets.QWidget_ITF {
 	})
 
 	loading := widgets.NewQProgressBar(nil)
+	loading.SetRange(0, 1)
 	ui.loadingProgress = loading
 
 	layout.AddWidget2(scanDeviceBtn, 0, 0, 0)

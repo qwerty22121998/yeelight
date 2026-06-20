@@ -20,10 +20,26 @@ type DeviceUI struct {
 	*widgets.QWidget
 	device       *yeelight.Device
 	setting      *Setting
+	status       func(string) // report errors to the status bar; marshals to the GUI thread
 	layout       *widgets.QGridLayout
 	mainLight    *lightUI
 	ambientLight *lightUI
 	info         *infoUI
+}
+
+// send runs cmd off the GUI thread (SendCommand blocks up to 5s — must never
+// run on the GUI thread). On failure it reports to the status bar and, if
+// given, runs onErr back on the GUI thread (e.g. to revert a slider).
+func (d *DeviceUI) send(ctx context.Context, cmd yeelight.Command, onErr func()) {
+	go func() {
+		if _, err := d.device.SendCommand(ctx, cmd); err != nil {
+			slog.Error("command failed", "ip", d.device.IP, "method", cmd.Method, "error", err)
+			d.status("Command failed: " + err.Error())
+			if onErr != nil {
+				runOnUI(onErr)
+			}
+		}
+	}()
 }
 
 type lightUI struct {
@@ -41,10 +57,11 @@ type infoUI struct {
 	Layout *widgets.QFormLayout
 }
 
-func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting) *DeviceUI {
+func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting, status func(string)) *DeviceUI {
 	ui := &DeviceUI{
 		device:  device,
 		setting: setting,
+		status:  status,
 	}
 
 	ui.QWidget = widgets.NewQWidget(nil, 0)
@@ -68,7 +85,7 @@ func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting)
 			case <-device.Done():
 				return
 			case <-updated:
-				ui.update()
+				runOnUI(ui.update)
 			}
 		}
 	}()
@@ -76,28 +93,26 @@ func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting)
 	return ui
 }
 
+// setSlider applies v to a slider unless the user is currently dragging it
+// (a device notification mid-drag would fight the user's input).
+func setSlider(s *widgets.QSlider, v *int) {
+	if allNotNil(s, v) && !s.IsSliderDown() {
+		s.SetValue(*v)
+	}
+}
+
 func (d *DeviceUI) update() {
-	if allNotNil(d.mainLight.BrightnessSlider, d.device.Data.Bright) {
-		d.mainLight.BrightnessSlider.SetValue(*d.device.Data.Bright)
-	}
-	if allNotNil(d.mainLight.CTSlider, d.device.Data.Ct) {
-		d.mainLight.CTSlider.SetValue(*d.device.Data.Ct)
-	}
-
-	if allNotNil(d.mainLight.ColorBtn, d.device.Data.RGB) {
-		d.mainLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(*d.device.Data.RGB))
+	data := d.device.Snapshot()
+	setSlider(d.mainLight.BrightnessSlider, data.Bright)
+	setSlider(d.mainLight.CTSlider, data.Ct)
+	if allNotNil(d.mainLight.ColorBtn, data.RGB) {
+		d.mainLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(*data.RGB))
 	}
 
-	if allNotNil(d.ambientLight.BrightnessSlider, d.device.Data.BgBright) {
-		d.ambientLight.BrightnessSlider.SetValue(*d.device.Data.BgBright)
-	}
-
-	if allNotNil(d.ambientLight.CTSlider, d.device.Data.BgCt) {
-		d.ambientLight.CTSlider.SetValue(*d.device.Data.BgCt)
-	}
-
-	if allNotNil(d.ambientLight.ColorBtn, d.device.Data.BgRGB) {
-		d.ambientLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(*d.device.Data.BgRGB))
+	setSlider(d.ambientLight.BrightnessSlider, data.BgBright)
+	setSlider(d.ambientLight.CTSlider, data.BgCt)
+	if allNotNil(d.ambientLight.ColorBtn, data.BgRGB) {
+		d.ambientLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(*data.BgRGB))
 	}
 }
 
@@ -136,10 +151,7 @@ func (d *DeviceUI) renderMainLight(ctx context.Context) {
 		mainLight.Layout.AddRow3("Power", mainLight.PowerBtn)
 
 		mainLight.PowerBtn.ConnectClicked(func(_ bool) {
-			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.Toggle))
-			if err != nil {
-
-			}
+			d.send(ctx, yeelight.C(yeelight.Toggle), nil)
 		})
 	}
 
@@ -148,11 +160,9 @@ func (d *DeviceUI) renderMainLight(ctx context.Context) {
 		mainLight.BrightnessSlider.SetRange(1, 100)
 		mainLight.BrightnessSlider.ConnectSliderReleased(func() {
 			value := mainLight.BrightnessSlider.Value()
-			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.SetBright, value, d.setting.Effect, d.setting.EffectDuration))
-			if err != nil {
-				mainLight.BrightnessSlider.SetValue(*d.device.Data.Bright)
-				return
-			}
+			d.send(ctx, yeelight.C(yeelight.SetBright, value, d.setting.Effect, d.setting.EffectDuration), func() {
+				setSlider(mainLight.BrightnessSlider, d.device.Snapshot().Bright)
+			})
 		})
 
 		mainLight.Layout.AddRow3("Brightness", mainLight.BrightnessSlider)
@@ -163,14 +173,27 @@ func (d *DeviceUI) renderMainLight(ctx context.Context) {
 		mainLight.CTSlider.SetRange(1700, 6500)
 		mainLight.CTSlider.ConnectSliderReleased(func() {
 			value := mainLight.CTSlider.Value()
-			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.SetCtAbx, value, d.setting.Effect, d.setting.EffectDuration))
-			if err != nil {
-				mainLight.CTSlider.SetValue(*d.device.Data.Ct)
-				return
-			}
+			d.send(ctx, yeelight.C(yeelight.SetCtAbx, value, d.setting.Effect, d.setting.EffectDuration), func() {
+				setSlider(mainLight.CTSlider, d.device.Snapshot().Ct)
+			})
 		})
 
 		mainLight.Layout.AddRow3("Color Temperature", mainLight.CTSlider)
+	}
+
+	if d.device.Methods[yeelight.SetRGB] {
+		mainLight.ColorDialog = widgets.NewQColorDialog(nil)
+		mainLight.ColorDialog.ConnectAccepted(func() {
+			color := mainLight.ColorDialog.CurrentColor()
+			colorInt := rgbToColorInt(color.Red(), color.Green(), color.Blue())
+			d.send(ctx, yeelight.C(yeelight.SetRGB, colorInt, d.setting.Effect, d.setting.EffectDuration), nil)
+		})
+
+		mainLight.ColorBtn = widgets.NewQPushButton(nil)
+		mainLight.ColorBtn.ConnectClicked(func(checked bool) {
+			mainLight.ColorDialog.Exec()
+		})
+		mainLight.Layout.AddRow3("Color", mainLight.ColorBtn)
 	}
 
 	d.mainLight = mainLight
@@ -190,12 +213,8 @@ func (d *DeviceUI) renderAmbientLight(ctx context.Context) {
 		ambientLight.Layout.AddRow3("Power", ambientLight.PowerBtn)
 
 		ambientLight.PowerBtn.ConnectClicked(func(_ bool) {
-			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgToggle))
-			if err != nil {
-
-			}
+			d.send(ctx, yeelight.C(yeelight.BgToggle), nil)
 		})
-
 	}
 
 	if d.device.Methods[yeelight.BgSetBright] {
@@ -205,11 +224,9 @@ func (d *DeviceUI) renderAmbientLight(ctx context.Context) {
 
 		ambientLight.BrightnessSlider.ConnectSliderReleased(func() {
 			value := ambientLight.BrightnessSlider.Value()
-			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgSetBright, value, d.setting.Effect, d.setting.EffectDuration))
-			if err != nil {
-				ambientLight.BrightnessSlider.SetValue(*d.device.Data.BgBright)
-				return
-			}
+			d.send(ctx, yeelight.C(yeelight.BgSetBright, value, d.setting.Effect, d.setting.EffectDuration), func() {
+				setSlider(ambientLight.BrightnessSlider, d.device.Snapshot().BgBright)
+			})
 		})
 	}
 
@@ -220,11 +237,9 @@ func (d *DeviceUI) renderAmbientLight(ctx context.Context) {
 
 		ambientLight.CTSlider.ConnectSliderReleased(func() {
 			value := ambientLight.CTSlider.Value()
-			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgSetCtAbx, value, d.setting.Effect, d.setting.EffectDuration))
-			if err != nil {
-				ambientLight.CTSlider.SetValue(*d.device.Data.BgCt)
-				return
-			}
+			d.send(ctx, yeelight.C(yeelight.BgSetCtAbx, value, d.setting.Effect, d.setting.EffectDuration), func() {
+				setSlider(ambientLight.CTSlider, d.device.Snapshot().BgCt)
+			})
 		})
 	}
 
@@ -232,13 +247,8 @@ func (d *DeviceUI) renderAmbientLight(ctx context.Context) {
 		ambientLight.ColorDialog = widgets.NewQColorDialog(nil)
 		ambientLight.ColorDialog.ConnectAccepted(func() {
 			color := ambientLight.ColorDialog.CurrentColor()
-			r, g, b := color.Red(), color.Green(), color.Blue()
-			colorInt := rgbToColorInt(int(r), int(g), int(b))
-			_, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgSetRGB, colorInt, d.setting.Effect, d.setting.EffectDuration))
-			if err != nil {
-				return
-			}
-
+			colorInt := rgbToColorInt(color.Red(), color.Green(), color.Blue())
+			d.send(ctx, yeelight.C(yeelight.BgSetRGB, colorInt, d.setting.Effect, d.setting.EffectDuration), nil)
 		})
 
 		ambientLight.ColorBtn = widgets.NewQPushButton(nil)
@@ -328,9 +338,11 @@ func (d *DeviceUI) renderAmbientLight(ctx context.Context) {
 						}
 						// Reflect the synced color on the ambient color button now —
 						// the device doesn't reliably emit a props notification for
-						// its own bg_set_rgb. (Same off-GUI-thread SetStyleSheet the
-						// update() watcher already uses.)
-						ambientLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(color))
+						// its own bg_set_rgb. Marshal to the GUI thread: this runs on
+						// the capture goroutine.
+						runOnUI(func() {
+							ambientLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(color))
+						})
 					}()
 				})
 				if cfg.Enabled {

@@ -18,9 +18,10 @@ const respWaitTimeout = 5 * time.Second
 type Device struct {
 	*Info
 
-	Data Data     `json:"data"`
-	con  net.Conn // TCP connection
-	done chan struct{}
+	data   Data         // device props; guarded by dataMu
+	dataMu sync.RWMutex // guards data: written by listen() goroutine, read by callers via Snapshot
+	con    net.Conn     // TCP connection
+	done   chan struct{}
 
 	mu          sync.RWMutex
 	baseID      int
@@ -49,6 +50,15 @@ func New(ctx context.Context, info *Info) (*Device, error) {
 
 func (d *Device) Updated() <-chan struct{} {
 	return d.updatedChan
+}
+
+// Snapshot returns a copy of the device's current props, safe to read from any
+// goroutine. Data's fields are pointers that mergeValue only ever replaces
+// (never mutates in place), so a shallow struct copy is a consistent snapshot.
+func (d *Device) Snapshot() Data {
+	d.dataMu.RLock()
+	defer d.dataMu.RUnlock()
+	return d.data
 }
 
 // Done is closed when the device is closed; watchers should select on it to exit.
@@ -176,7 +186,9 @@ func (d *Device) listen(ctx context.Context) {
 }
 
 func (d *Device) updateData(ctx context.Context, data Data) {
-	mergeData(&d.Data, &data)
+	d.dataMu.Lock()
+	mergeData(&d.data, &data)
+	d.dataMu.Unlock()
 
 	select {
 	case d.updatedChan <- struct{}{}:
@@ -194,6 +206,8 @@ func (d *Device) FetchProps(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	d.dataMu.Lock()
+	defer d.dataMu.Unlock()
 	for i, prop := range AllProperties {
 		if i >= len(resp.Result) {
 			break
@@ -211,57 +225,57 @@ func (d *Device) FetchProps(ctx context.Context) error {
 			intValue := int(int64Value)
 			switch prop {
 			case Bright:
-				d.Data.Bright = Ptr(intValue)
+				d.data.Bright = Ptr(intValue)
 			case Ct:
-				d.Data.Ct = Ptr(intValue)
+				d.data.Ct = Ptr(intValue)
 			case RGB:
-				d.Data.RGB = Ptr(intValue)
+				d.data.RGB = Ptr(intValue)
 			case Hue:
-				d.Data.Hue = Ptr(intValue)
+				d.data.Hue = Ptr(intValue)
 			case Sat:
-				d.Data.Sat = Ptr(intValue)
+				d.data.Sat = Ptr(intValue)
 			case ColorMode:
-				d.Data.ColorMode = Ptr(intValue)
+				d.data.ColorMode = Ptr(intValue)
 			case Flowing:
-				d.Data.Flowing = Ptr(intValue)
+				d.data.Flowing = Ptr(intValue)
 			case DelayOff:
-				d.Data.DelayOff = Ptr(intValue)
+				d.data.DelayOff = Ptr(intValue)
 			case MusicOn:
-				d.Data.MusicOn = Ptr(intValue)
+				d.data.MusicOn = Ptr(intValue)
 			case BgFlowing:
-				d.Data.BgFlowing = Ptr(intValue)
+				d.data.BgFlowing = Ptr(intValue)
 			case BgCt:
-				d.Data.BgCt = Ptr(intValue)
+				d.data.BgCt = Ptr(intValue)
 			case BgLMode:
-				d.Data.BgLMode = Ptr(intValue)
+				d.data.BgLMode = Ptr(intValue)
 			case BgBright:
-				d.Data.BgBright = Ptr(intValue)
+				d.data.BgBright = Ptr(intValue)
 			case BgRGB:
-				d.Data.BgRGB = Ptr(intValue)
+				d.data.BgRGB = Ptr(intValue)
 			case BgSat:
-				d.Data.BgSat = Ptr(intValue)
+				d.data.BgSat = Ptr(intValue)
 			case NlBr:
-				d.Data.NLBr = Ptr(intValue)
+				d.data.NLBr = Ptr(intValue)
 			case ActiveMode:
-				d.Data.ActiveMode = Ptr(intValue)
+				d.data.ActiveMode = Ptr(intValue)
 			case BGProact:
-				d.Data.BGProact = Ptr(intValue)
+				d.data.BGProact = Ptr(intValue)
 			}
 		default:
 			value = resp.Result[i]
 			switch prop {
 			case Power:
-				d.Data.Power = Ptr(value)
+				d.data.Power = Ptr(value)
 			case MainPower:
-				d.Data.MainPower = Ptr(value)
+				d.data.MainPower = Ptr(value)
 			case FlowParams:
-				d.Data.FlowParams = Ptr(value)
+				d.data.FlowParams = Ptr(value)
 			case Name:
-				d.Data.Name = Ptr(value)
+				d.data.Name = Ptr(value)
 			case BgPower:
-				d.Data.BgPower = Ptr(value)
+				d.data.BgPower = Ptr(value)
 			case BgFlowParams:
-				d.Data.BgFlowParams = Ptr(value)
+				d.data.BgFlowParams = Ptr(value)
 			}
 		}
 	}
