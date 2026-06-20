@@ -71,11 +71,13 @@ func (d *Device) Close() error {
 	return d.con.Close()
 }
 
-// SendCommand sends a command to the Yeelight device and waits for the corresponding response. It generates a unique command ID if one is not provided, marshals the command into JSON format, and writes it to the TCP connection. The function then waits for a response with the same command ID using the notification handler. If a response is received within the timeout period, it returns the response; otherwise, it returns an error indicating a timeout.
+// SendCommand sends a command to the device and waits for the matching
+// response (correlated by id, with a 5s timeout). The device's advertised
+// support list is treated as a hint, NOT a gate: some firmware supports
+// methods it does not advertise (notably set_music), so the command is always
+// sent and the device itself is the authority. A genuinely unsupported method
+// comes back as an *Error for which IsUnsupported reports true.
 func (d *Device) SendCommand(ctx context.Context, cmd Command) (*Response, error) {
-	if ok := d.Methods[cmd.Method]; !ok {
-		return nil, fmt.Errorf("unsupported method: %s", cmd.Method)
-	}
 	if cmd.ID == 0 {
 		cmd.ID = d.genID()
 	}
@@ -186,6 +188,15 @@ func (d *Device) listen(ctx context.Context) {
 }
 
 func (d *Device) updateData(ctx context.Context, data Data) {
+	// main_power and power are the same thing (the main light); firmware emits
+	// one or the other in different props messages. Mirror within this message
+	// so readers can rely on Power alone and always see the latest value.
+	if data.Power == nil {
+		data.Power = data.MainPower
+	} else if data.MainPower == nil {
+		data.MainPower = data.Power
+	}
+
 	d.dataMu.Lock()
 	mergeData(&d.data, &data)
 	d.dataMu.Unlock()
@@ -196,6 +207,15 @@ func (d *Device) updateData(ctx context.Context, data Data) {
 		return
 	}
 
+}
+
+// ApplyLocal optimistically merges caller-known state (only non-nil fields)
+// into the snapshot and pulses watchers, for state the bulb won't echo back —
+// e.g. the power we just set on firmware that omits power from async props.
+// Without it, a later props notification would re-apply the stale value and
+// fight the user's toggle.
+func (d *Device) ApplyLocal(data Data) {
+	d.updateData(context.Background(), data)
 }
 
 func (d *Device) FetchProps(ctx context.Context) error {

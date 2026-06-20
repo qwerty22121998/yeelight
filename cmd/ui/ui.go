@@ -6,6 +6,7 @@ import (
 	"yeelight/pkg/yeelight"
 
 	"github.com/therecipe/qt/core"
+	"github.com/therecipe/qt/gui"
 	"github.com/therecipe/qt/widgets"
 )
 
@@ -44,6 +45,7 @@ func (ui *UI) showStatus(msg string) {
 func (ui *UI) devicesUI() widgets.QWidget_ITF {
 	devicesTab := widgets.NewQTabWidget(nil)
 	ui.devicesTab = devicesTab
+	devicesTab.AddTab(emptyState(), "No devices") // hint until the first scan returns
 	return devicesTab
 }
 
@@ -141,13 +143,19 @@ func (ui *UI) functionBtnUI(ctx context.Context) widgets.QWidget_ITF {
 		ui.root.Hide()
 	})
 
+	quitBtn := widgets.NewQPushButton2("Quit", nil)
+	quitBtn.ConnectClicked(func(checked bool) {
+		core.QCoreApplication_Exit(0)
+	})
+
 	loading := widgets.NewQProgressBar(nil)
 	loading.SetRange(0, 1)
 	ui.loadingProgress = loading
 
 	layout.AddWidget2(scanDeviceBtn, 0, 0, 0)
 	layout.AddWidget2(hideBtn, 0, 1, 0)
-	layout.AddWidget2(loading, 0, 2, 0)
+	layout.AddWidget2(quitBtn, 0, 2, 0)
+	layout.AddWidget2(loading, 0, 3, 0)
 	return widget
 }
 
@@ -193,6 +201,7 @@ func (ui *UI) RenderMain(ctx context.Context, root *widgets.QMainWindow) {
 	functionTab.SetTabPosition(widgets.QTabWidget__West)
 	functionTab.AddTab(ui.devicesUI(), "Devices")
 	functionTab.AddTab(NewSettingUI(ui.setting), "Settings")
+	functionTab.AddTab(logUI(), "Log")
 
 	layout.AddWidget(functionTab, 1, 0)
 	layout.AddWidget(ui.functionBtnUI(ctx), 0, core.Qt__AlignBottom)
@@ -200,4 +209,17 @@ func (ui *UI) RenderMain(ctx context.Context, root *widgets.QMainWindow) {
 	root.SetCentralWidget(widget)
 
 	ui.initTray(root)
+
+	// Closing the window hides to the tray (app keeps running) when a tray is
+	// available; otherwise let the close quit normally.
+	root.ConnectCloseEvent(func(e *gui.QCloseEvent) {
+		if widgets.QSystemTrayIcon_IsSystemTrayAvailable() {
+			root.Hide()
+			e.Ignore()
+			return
+		}
+		e.Accept()
+	})
+
+	go ui.scan(ctx) // auto-scan once on launch
 }
