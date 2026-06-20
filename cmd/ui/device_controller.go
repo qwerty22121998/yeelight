@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
+	"yeelight/pkg/screen"
 	"yeelight/pkg/yeelight"
 
 	"github.com/therecipe/qt/core"
+	"github.com/therecipe/qt/gui"
 	"github.com/therecipe/qt/widgets"
 )
 
@@ -59,6 +64,8 @@ func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting)
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-device.Done():
 				return
 			case <-updated:
 				ui.update()
@@ -240,6 +247,98 @@ func (d *DeviceUI) renderAmbientLight(ctx context.Context) {
 		})
 
 		ambientLight.Layout.AddRow3("Color", ambientLight.ColorBtn)
+
+		// Screen Sync (per-device): poll the chosen screen's average color into
+		// the ambient light. Capture (pkg/screen, a subprocess) and the device
+		// command run off the GUI thread so the UI never stalls; inFlight
+		// serializes sends, since concurrent writes to the one TCP conn would
+		// corrupt the stream. The QTimer and the screen list are set up in
+		// ShowEvent: a QTimer only fires from the thread it is created in and
+		// listScreens reads Qt globals — both need the GUI thread, but device
+		// tabs are built on the scan goroutine.
+		cfg := d.setting.SyncFor(d.device.ID)
+
+		screenCombo := widgets.NewQComboBox(nil)
+		ambientLight.Layout.AddRow3("Sync Screen", screenCombo)
+
+		intervalSpin := widgets.NewQSpinBox(nil)
+		intervalSpin.SetRange(100, 60000)
+		intervalSpin.SetValue(cfg.Interval)
+		ambientLight.Layout.AddRow3("Sync Interval (ms)", intervalSpin)
+
+		var inFlight atomic.Bool
+		var timer *core.QTimer
+		syncBtn := widgets.NewQPushButton2("Sync", nil)
+		syncBtn.SetCheckable(true)
+		ambientLight.Layout.AddRow3("Screen Sync", syncBtn)
+
+		intervalSpin.ConnectValueChanged(func(value int) {
+			cfg.Interval = value
+			d.setting.Save()
+			if timer != nil && timer.IsActive() {
+				timer.SetInterval(value)
+			}
+		})
+
+		syncBtn.ConnectClicked(func(checked bool) {
+			if timer == nil {
+				return
+			}
+			if checked {
+				timer.Start(cfg.Interval)
+			} else {
+				timer.Stop()
+			}
+			cfg.Enabled = checked
+			d.setting.Save()
+		})
+
+		var bootOnce sync.Once
+		syncBtn.ConnectShowEvent(func(e *gui.QShowEvent) {
+			syncBtn.ShowEventDefault(e)
+			bootOnce.Do(func() {
+				screenCombo.AddItems(listScreens())
+				screenCombo.SetCurrentIndex(cfg.ScreenIndex)
+				screenCombo.ConnectCurrentIndexChanged(func(index int) {
+					cfg.ScreenIndex = index
+					d.setting.Save()
+				})
+
+				timer = core.NewQTimer(nil)
+				timer.ConnectTimeout(func() {
+					if !inFlight.CompareAndSwap(false, true) {
+						return
+					}
+					// Read screen geometry on the GUI thread (Qt), then capture +
+					// send off-thread.
+					x, y, w, h, ok := screenRect(cfg.ScreenIndex)
+					if !ok {
+						inFlight.Store(false)
+						return
+					}
+					go func() {
+						defer inFlight.Store(false)
+						color, err := screen.Average(x, y, w, h)
+						if err != nil {
+							slog.Warn("screen sync capture failed", "error", err)
+							return
+						}
+						if _, err := d.device.SendCommand(ctx, yeelight.C(yeelight.BgSetRGB, color, d.setting.Effect, d.setting.EffectDuration)); err != nil {
+							return
+						}
+						// Reflect the synced color on the ambient color button now —
+						// the device doesn't reliably emit a props notification for
+						// its own bg_set_rgb. (Same off-GUI-thread SetStyleSheet the
+						// update() watcher already uses.)
+						ambientLight.ColorBtn.SetStyleSheet("background-color: " + colorIntToRGB(color))
+					}()
+				})
+				if cfg.Enabled {
+					syncBtn.SetChecked(true)
+					timer.Start(cfg.Interval)
+				}
+			})
+		})
 	}
 
 	d.ambientLight = ambientLight

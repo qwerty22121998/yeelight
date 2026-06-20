@@ -7,6 +7,7 @@ import (
 
 func main() {
 	ctx := context.Background()
+	yeelight.EnsureFirewallPort(ctx, yeelight.DefaultListenPort)
 	devices, err := yeelight.Discover(ctx, nil)
 	if err != nil {
 		panic(err)
