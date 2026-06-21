@@ -12,14 +12,17 @@ import (
 const defaultSyncInterval = 1000
 
 type Setting struct {
-	DiscoverConfig *yeelight.DiscoverConfig
-	Effect         yeelight.Effect
-	EffectDuration int
-	Sync           map[string]*DeviceSync // per-device screen-sync config, keyed by device ID
-	Style          string                 // Qt widget style key (e.g. "Fusion"); empty = platform default
-	Theme          Theme                  // UI color palette
-	MusicScheme    string                 // music-sync tone→hue scheme name (see musicSchemes)
-	MusicFloor     float64                // music-sync brightness floor (0..1); quiet-passage minimum
+	DiscoverConfig   *yeelight.DiscoverConfig
+	Effect           yeelight.Effect
+	EffectDuration   int
+	Sync             map[string]*DeviceSync // per-device screen-sync config, keyed by device ID
+	Style            string                 // Qt widget style key (e.g. "Fusion"); empty = platform default
+	Theme            Theme                  // UI color palette
+	MusicScheme      string                 // music-sync tone→hue scheme name (see musicSchemes)
+	MusicFloor       float64                // music-sync brightness floor (0..1); quiet-passage minimum
+	MusicMode        string                 // music-sync mode (see musicModeNames): Spectrum/Beat Pulse/Strobe/Steady
+	MusicSensitivity float64                // loudness gain before brightness map (1 = unity)
+	MusicSaturation  float64                // color saturation 0..1 (1 = vivid)
 }
 
 // DeviceSync is one device's screen-sync config, persisted per device.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -103,6 +104,15 @@ func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting,
 	ui.update()
 	updated := device.Updated()
 	go func() {
+		// Coalesce props pulses: apply the first immediately, then at most one
+		// more per updateInterval. Without this, a fast prop stream (e.g. the
+		// bulb echoing every music/screen-sync color change) floods the GUI
+		// thread with ui.update — each rewrites stylesheets, which Qt reparses —
+		// and the UI goes laggy. Leading edge + trailing so a burst still ends
+		// on the latest state.
+		var timerC <-chan time.Time
+		var timer *time.Timer
+		pending := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -110,7 +120,21 @@ func NewDeviceUI(ctx context.Context, device *yeelight.Device, setting *Setting,
 			case <-device.Done():
 				return
 			case <-updated:
-				runOnUI(ui.update)
+				if timerC == nil {
+					runOnUI(ui.update)
+					timer = time.NewTimer(updateInterval)
+					timerC = timer.C
+				} else {
+					pending = true
+				}
+			case <-timerC:
+				if pending {
+					runOnUI(ui.update)
+					pending = false
+					timer.Reset(updateInterval)
+				} else {
+					timerC = nil
+				}
 			}
 		}
 	}()
@@ -445,6 +469,11 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 	effects.SetLayout(layout)
 	d.effects = effects
 
+	// Screen and music sync both drive the one ambient light, so only one runs
+	// at a time. Each block assigns its stopper; the other calls it (nil-safe)
+	// before starting. Assigned below; closures capture the vars, not values.
+	var stopScreenSync, stopMusicSync func()
+
 	// Screen Sync (per-device): poll the chosen screen's average color into
 	// the ambient light. Capture (pkg/screen, a subprocess) and the device
 	// command run off the GUI thread so the UI never stalls; inFlight
@@ -524,11 +553,29 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 			}
 		})
 
+		// stopScreenSync turns screen sync off if it's on (used by music sync to
+		// claim the ambient light). SetChecked won't fire ConnectClicked, so it
+		// stops explicitly.
+		stopScreenSync = func() {
+			if !syncBtn.IsChecked() {
+				return
+			}
+			syncBtn.SetChecked(false)
+			if timer != nil {
+				stopSync()
+			}
+			cfg.Enabled = false
+			d.setting.Save()
+		}
+
 		syncBtn.ConnectClicked(func(checked bool) {
 			if timer == nil {
 				return
 			}
 			if checked {
+				if stopMusicSync != nil {
+					stopMusicSync() // mutually exclusive: only one sync at a time
+				}
 				startSync()
 			} else {
 				stopSync()
@@ -599,9 +646,22 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 		musicBtn.SetCheckable(true)
 		layout.AddRow3("Music Sync", musicBtn)
 
-		// Tone→color scheme and quiet-passage brightness floor. Shared across
-		// devices (one value on Setting), shown here so they sit with the Music
-		// Sync control that uses them; runMusicSync reads them live per-tick.
+		// Mode/scheme/sensitivity/saturation/floor live in one container so they
+		// can hide as a unit — shown only while Music Sync is on. Shared across
+		// devices (one value on Setting); runMusicSync reads them live per-tick.
+		musicConfig := widgets.NewQWidget(nil, 0)
+		cfgLayout := widgets.NewQFormLayout(nil)
+		musicConfig.SetLayout(cfgLayout)
+
+		modeCombo := widgets.NewQComboBox(nil)
+		modeCombo.AddItems(musicModeNames)
+		modeCombo.SetCurrentText(d.setting.MusicMode)
+		modeCombo.ConnectCurrentTextChanged(func(text string) {
+			d.setting.MusicMode = text
+			d.setting.Save()
+		})
+		cfgLayout.AddRow3("Music Mode", modeCombo)
+
 		schemeCombo := widgets.NewQComboBox(nil)
 		schemeCombo.AddItems(musicSchemeNames)
 		schemeCombo.SetCurrentText(d.setting.MusicScheme)
@@ -609,7 +669,25 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 			d.setting.MusicScheme = text
 			d.setting.Save()
 		})
-		layout.AddRow3("Music Color", schemeCombo)
+		cfgLayout.AddRow3("Music Color", schemeCombo)
+
+		sensSpin := widgets.NewQSpinBox(nil)
+		sensSpin.SetRange(50, 300)
+		sensSpin.SetValue(int(d.setting.MusicSensitivity * 100))
+		sensSpin.ConnectValueChanged(func(value int) {
+			d.setting.MusicSensitivity = float64(value) / 100
+			d.setting.Save()
+		})
+		cfgLayout.AddRow3("Music Sensitivity (%)", sensSpin)
+
+		satSpin := widgets.NewQSpinBox(nil)
+		satSpin.SetRange(0, 100)
+		satSpin.SetValue(int(d.setting.MusicSaturation * 100))
+		satSpin.ConnectValueChanged(func(value int) {
+			d.setting.MusicSaturation = float64(value) / 100
+			d.setting.Save()
+		})
+		cfgLayout.AddRow3("Music Saturation (%)", satSpin)
 
 		floorSpin := widgets.NewQSpinBox(nil)
 		floorSpin.SetRange(0, 100)
@@ -618,7 +696,7 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 			d.setting.MusicFloor = float64(value) / 100
 			d.setting.Save()
 		})
-		layout.AddRow3("Music Brightness Floor (%)", floorSpin)
+		cfgLayout.AddRow3("Music Brightness Floor (%)", floorSpin)
 
 		// Visualizer: a scrolling waveform of recent levels, each bar tinted
 		// with the color sent for that tick. Shown only while sync runs, and
@@ -626,9 +704,29 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 		// (rate-limited fallback).
 		viz := newWaveViz(128)
 		viz.SetVisible(false)
-		layout.AddRow3("", viz)
+		cfgLayout.AddRow3("", viz)
+
+		musicConfig.SetVisible(false) // hidden until Music Sync is on
+		layout.AddRow3("", musicConfig)
+
+		// Config visibility mirrors the button's checked state. ConnectToggled
+		// fires on programmatic SetChecked too (e.g. runMusicSync's stop on
+		// stream end, or stopMusicSync), so the config hides whenever sync ends.
+		musicBtn.ConnectToggled(func(checked bool) { musicConfig.SetVisible(checked) })
 
 		var cancel context.CancelFunc
+		// stopMusicSync turns music sync off if it's on (used by screen sync to
+		// claim the ambient light). SetChecked drives ConnectToggled to hide the
+		// config; the goroutine is cancelled explicitly since SetChecked does not
+		// fire ConnectClicked.
+		stopMusicSync = func() {
+			if cancel != nil {
+				cancel()
+				cancel = nil
+			}
+			musicBtn.SetChecked(false)
+		}
+
 		musicBtn.ConnectClicked(func(checked bool) {
 			if !checked {
 				if cancel != nil {
@@ -637,6 +735,9 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 				}
 				return
 			}
+			if stopScreenSync != nil {
+				stopScreenSync() // mutually exclusive: only one sync at a time
+			}
 			var mctx context.Context
 			mctx, cancel = context.WithCancel(ctx)
 			go d.runMusicSync(mctx, musicBtn, viz)
@@ -644,46 +745,85 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 	}
 }
 
+// maxFlowSteps caps how many buffered colors go into one fallback color flow.
+// Audio ticks land ~11/s, so a 1s window holds ~10; the bulb tweens through
+// them autonomously and the flow stays roughly 1s of wall-clock either way.
+const maxFlowSteps = 9
+
 // rgbSender pushes a stream of RGB updates to a device's light. It prefers
 // music mode (set_music opens a side channel with NO command-rate limit — the
 // point of the whole exercise, since screen and music sync push far more than
 // the bulb's ~60 cmd/min control-connection quota). If the bulb has no music
-// mode it falls back to the control connection, throttled to one update per
-// second. Not safe for concurrent use.
+// mode it falls back to the control connection: it buffers the colors that
+// arrive within minGap and flushes them as ONE color flow (bg_start_cf), so a
+// single command/sec still animates the whole second instead of dropping all
+// but one sample. Costs up to ~minGap of latency. Not safe for concurrent use.
 type rgbSender struct {
-	dev    *yeelight.Device
-	method yeelight.Method
-	music  *yeelight.Music
-	minGap time.Duration // >0 only in fallback
-	last   time.Time
+	dev        *yeelight.Device
+	method     yeelight.Method
+	flowMethod yeelight.Method // start_cf variant matching method; fallback only
+	music      *yeelight.Music
+	minGap     time.Duration // >0 only in fallback
+	last       time.Time
+	buf        []int // colors awaiting the next fallback flush
 }
 
 // newRGBSender starts a sender for method (e.g. bg_set_rgb). usingMusic reports
-// whether music mode was acquired; false means the throttled fallback is in
-// use. StartMusic blocks up to ~5s, so never call this on the GUI thread.
+// whether music mode was acquired; false means the batched fallback is in use.
+// StartMusic blocks up to ~5s, so never call this on the GUI thread.
 func newRGBSender(ctx context.Context, dev *yeelight.Device, method yeelight.Method) (s *rgbSender, usingMusic bool) {
-	s = &rgbSender{dev: dev, method: method}
+	flow := yeelight.StartCf
+	if method == yeelight.BgSetRGB {
+		flow = yeelight.BgStartCf
+	}
+	s = &rgbSender{dev: dev, method: method, flowMethod: flow}
 	if music, err := dev.StartMusic(ctx); err == nil {
 		s.music = music
 	} else {
-		slog.Warn("music mode unavailable; throttled fallback", "ip", dev.IP, "error", err)
+		slog.Warn("music mode unavailable; batched-flow fallback", "ip", dev.IP, "error", err)
 		s.minGap = time.Second
 	}
 	return s, s.music != nil
 }
 
-// send pushes one update. In fallback it silently drops updates that land
-// within minGap of the previous one, keeping the bulb under quota.
+// send pushes one update. In fallback it buffers the color and, once minGap has
+// elapsed since the last flush, sends the whole buffer as one color flow.
 func (s *rgbSender) send(ctx context.Context, rgb int) {
 	if s.music != nil {
 		s.music.Send(yeelight.C(s.method, rgb, "sudden", 0))
 		return
 	}
-	if s.minGap > 0 && time.Since(s.last) < s.minGap {
+	s.buf = append(s.buf, rgb)
+	if len(s.buf) > maxFlowSteps { // keep the most recent window
+		s.buf = s.buf[len(s.buf)-maxFlowSteps:]
+	}
+	if time.Since(s.last) < s.minGap { // still filling this window
 		return
 	}
+	s.flush(ctx)
+}
+
+// flush sends the buffered colors as one color flow spanning ~minGap and clears
+// the buffer. The flow's last step stays lit (FlowStay) until the next flush.
+// ponytail: brightness pinned to 100 — music/screen sync is a full-on visual
+// mode and musicColor already encodes loudness into the RGB magnitude; this
+// overrides any brightness the user set on the light while sync runs.
+func (s *rgbSender) flush(ctx context.Context) {
+	if len(s.buf) == 0 {
+		return
+	}
+	step := max(int(s.minGap/time.Millisecond)/len(s.buf), 50) // 50ms = Yeelight's per-transition floor
+	exprs := make([]yeelight.FlowExpression, len(s.buf))
+	for i, rgb := range s.buf {
+		exprs[i] = yeelight.FlowExpression{Duration: step, Mode: yeelight.FlowRGB, Value: rgb, Brightness: 100}
+	}
+	s.dev.SendCommand(ctx, yeelight.C(s.flowMethod, yeelight.ColorFlow{
+		Count:      len(exprs),
+		Action:     yeelight.FlowStay,
+		Expression: exprs,
+	}.Build()...))
+	s.buf = s.buf[:0]
 	s.last = time.Now()
-	s.dev.SendCommand(ctx, yeelight.C(s.method, rgb, "smooth", 300))
 }
 
 // Close leaves music mode if it was entered.
@@ -697,19 +837,35 @@ func (s *rgbSender) Close() {
 // treble at start+span (degrees). Picked in Settings → Effect.
 type musicScheme struct{ start, span float64 }
 
-const defaultMusicScheme = "Spectrum"
-const defaultMusicFloor = 0.2
+const (
+	defaultMusicScheme      = "Spectrum"
+	defaultMusicFloor       = 0.2
+	defaultMusicMode        = "Spectrum"
+	defaultMusicSensitivity = 1.0
+	defaultMusicSaturation  = 1.0
+
+	// pulseCycleTicks is how many ticks (~11/s) one Beat Pulse hue sweep takes.
+	pulseCycleTicks = 40 // ~3.6s per full cycle
+	// strobeThreshold is the loudness above which Strobe flashes white.
+	strobeThreshold = 0.6
+)
 
 // musicSchemeNames is the picker order; musicSchemes is the lookup. Spectrum is
 // the default — the original hardcoded red→blue mapping.
 var (
-	musicSchemeNames = []string{"Spectrum", "Rainbow", "Warm", "Cool"}
+	musicSchemeNames = []string{"Spectrum", "Rainbow", "Warm", "Cool", "Fire", "Ocean", "Neon"}
 	musicSchemes     = map[string]musicScheme{
 		"Spectrum": {0, 240},   // red → blue
 		"Rainbow":  {0, 360},   // full wheel
 		"Warm":     {0, 60},    // red → yellow
 		"Cool":     {180, 120}, // cyan → purple
+		"Fire":     {0, 40},    // red → orange
+		"Ocean":    {180, 60},  // cyan → blue
+		"Neon":     {300, 180}, // magenta → cyan
 	}
+
+	// musicModeNames is the mode-picker order. Spectrum is the default.
+	musicModeNames = []string{"Spectrum", "Beat Pulse", "Strobe", "Steady"}
 )
 
 // schemeHue resolves a scheme name (unknown falls back to the default) and maps
@@ -733,6 +889,48 @@ func musicValue(floor, level float64) float64 {
 		floor = 1
 	}
 	return floor + (1-floor)*level
+}
+
+// musicColor maps one audio tick to a packed RGB color per the user's music
+// settings. tickN counts ticks since sync started; Beat Pulse uses it to cycle
+// hue over time. Pure (modulo the scheme table) so it's unit-testable. Read
+// per-tick, so every setting applies live without restarting sync.
+func musicColor(s *Setting, t audio.Tick, tickN int) int {
+	sat := clamp01(s.MusicSaturation)
+	// Sensitivity scales loudness before it drives brightness; <=0 means unity.
+	sens := s.MusicSensitivity
+	if sens <= 0 {
+		sens = 1
+	}
+	level := math.Min(t.Level*sens, 1)
+
+	switch s.MusicMode {
+	case "Beat Pulse":
+		// Hue sweeps the scheme on a timer; loudness pulses brightness.
+		phase := math.Mod(float64(tickN)/pulseCycleTicks, 1)
+		return hsvToColorInt(schemeHue(s.MusicScheme, phase), sat, musicValue(s.MusicFloor, level))
+	case "Strobe":
+		// White flash on loud beats, floor-dim white otherwise.
+		if level >= strobeThreshold {
+			return hsvToColorInt(0, 0, 1)
+		}
+		return hsvToColorInt(0, 0, clamp01(s.MusicFloor))
+	case "Steady":
+		// Fixed color (scheme start), loudness → brightness.
+		return hsvToColorInt(schemeHue(s.MusicScheme, 0), sat, musicValue(s.MusicFloor, level))
+	default: // "Spectrum": tone → hue, loudness → brightness.
+		return hsvToColorInt(schemeHue(s.MusicScheme, t.Tone), sat, musicValue(s.MusicFloor, level))
+	}
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // runMusicSync captures system audio and maps each tick to an ambient color
@@ -763,11 +961,12 @@ func (d *DeviceUI) runMusicSync(ctx context.Context, btn *widgets.QPushButton, v
 	sender, usingMusic := newRGBSender(ctx, d.device, yeelight.BgSetRGB)
 	defer sender.Close()
 	if !usingMusic {
-		d.status("Bulb has no music mode — slow fallback (~1 update/s)")
+		d.status("Bulb has no music mode — batched fallback (~1 flow/s, slight lag)")
 	}
 
 	runOnUI(func() { viz.SetVisible(true) })
 
+	tickN := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -780,9 +979,10 @@ func (d *DeviceUI) runMusicSync(ctx context.Context, btn *widgets.QPushButton, v
 				stop()
 				return
 			}
-			// tone -> hue (per the chosen scheme), loudness -> value, floored
-			// at MusicFloor so a quiet passage dims rather than going black.
-			rgb := hsvToColorInt(schemeHue(d.setting.MusicScheme, t.Tone), 1, musicValue(d.setting.MusicFloor, t.Level))
+			// Map the tick to a color per the live music settings (mode,
+			// scheme, sensitivity, saturation, floor). tickN drives Beat Pulse.
+			rgb := musicColor(d.setting, t, tickN)
+			tickN++
 			level := t.Level
 			runOnUI(func() { viz.push(level, rgb) })
 			sender.send(ctx, rgb)
