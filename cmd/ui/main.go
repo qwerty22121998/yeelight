@@ -32,12 +32,15 @@ func main() {
 	setupLogging()
 	ctx := context.Background()
 	app := widgets.NewQApplication(len(os.Args), os.Args)
+	qApp = app
+	platformDefaultStyle = currentStyleKey("", availableStyles()) // capture before any SetStyle, for the "Default" option
 	mainWindow := widgets.NewQMainWindow(nil, 0)
 	mainWindow.SetWindowTitle("Yeelight")
 	startUIDispatch()
 	mainWindow.Show()
 
 	ui := NewYeelightUI(mainWindow)
+	applyAppearance(ui.setting) // install the persisted (or default) style + palette
 	ui.RenderMain(ctx, mainWindow)
 
 	app.Exec()
