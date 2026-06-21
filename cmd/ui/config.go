@@ -16,14 +16,17 @@ const configFileName = "config.toml"
 // persistedSetting is the on-disk TOML shape. It is kept separate from Setting
 // so durations serialize as plain millisecond ints rather than nanoseconds.
 type persistedSetting struct {
-	Effect         string              `toml:"effect"`
-	EffectDuration int                 `toml:"effect_duration_ms"`
-	Discover       persistDiscover     `toml:"discover"`
-	DeviceSync     []persistDeviceSync `toml:"device_sync"`
-	Style          string              `toml:"style"`
-	Theme          persistTheme        `toml:"theme"`
-	MusicScheme    string              `toml:"music_scheme"`
-	MusicFloor     *float64            `toml:"music_floor"` // pointer: nil = absent (keep default); 0 is a valid floor
+	Effect           string              `toml:"effect"`
+	EffectDuration   int                 `toml:"effect_duration_ms"`
+	Discover         persistDiscover     `toml:"discover"`
+	DeviceSync       []persistDeviceSync `toml:"device_sync"`
+	Style            string              `toml:"style"`
+	Theme            persistTheme        `toml:"theme"`
+	MusicScheme      string              `toml:"music_scheme"`
+	MusicFloor       *float64            `toml:"music_floor"`       // pointer: nil = absent (keep default); 0 is a valid floor
+	MusicMode        string              `toml:"music_mode"`        // empty = absent (keep default)
+	MusicSensitivity *float64            `toml:"music_sensitivity"` // pointer: nil = absent (keep default)
+	MusicSaturation  *float64            `toml:"music_saturation"`  // pointer: nil = absent; 0 is valid (white)
 }
 
 type persistTheme struct {
@@ -74,10 +77,13 @@ func (s *Setting) toPersisted() persistedSetting {
 			TimeoutMS:   int(s.DiscoverConfig.Timeout / time.Millisecond),
 			ListenPort:  s.DiscoverConfig.ListenPort,
 		},
-		Style:       s.Style,
-		Theme:       persistTheme(s.Theme),
-		MusicScheme: s.MusicScheme,
-		MusicFloor:  &s.MusicFloor,
+		Style:            s.Style,
+		Theme:            persistTheme(s.Theme),
+		MusicScheme:      s.MusicScheme,
+		MusicFloor:       &s.MusicFloor,
+		MusicMode:        s.MusicMode,
+		MusicSensitivity: &s.MusicSensitivity,
+		MusicSaturation:  &s.MusicSaturation,
 	}
 }
 
@@ -121,6 +127,18 @@ func (s *Setting) applyPersisted(p persistedSetting) {
 
 	if p.MusicFloor != nil {
 		s.MusicFloor = *p.MusicFloor
+	}
+
+	if p.MusicMode != "" {
+		s.MusicMode = p.MusicMode
+	}
+
+	if p.MusicSensitivity != nil {
+		s.MusicSensitivity = *p.MusicSensitivity
+	}
+
+	if p.MusicSaturation != nil {
+		s.MusicSaturation = *p.MusicSaturation
 	}
 
 	// Overlay only the colors actually present on disk; s.Theme starts at

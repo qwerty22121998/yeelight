@@ -23,13 +23,16 @@ type UI struct {
 func NewYeelightUI(root *widgets.QMainWindow) *UI {
 	ui := &UI{
 		setting: &Setting{
-			DiscoverConfig: &yeelight.DiscoverConfig{},
-			Effect:         yeelight.EffectSmooth,
-			EffectDuration: 500,
-			Sync:           map[string]*DeviceSync{},
-			Theme:          darkTheme(),
-			MusicScheme:    defaultMusicScheme,
-			MusicFloor:     defaultMusicFloor,
+			DiscoverConfig:   &yeelight.DiscoverConfig{},
+			Effect:           yeelight.EffectSmooth,
+			EffectDuration:   500,
+			Sync:             map[string]*DeviceSync{},
+			Theme:            darkTheme(),
+			MusicScheme:      defaultMusicScheme,
+			MusicFloor:       defaultMusicFloor,
+			MusicMode:        defaultMusicMode,
+			MusicSensitivity: defaultMusicSensitivity,
+			MusicSaturation:  defaultMusicSaturation,
 		},
 		root: root,
 	}

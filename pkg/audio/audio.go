@@ -1,16 +1,14 @@
 // Package audio captures the system's audio output and reduces it to a stream
-// of loudness/tone ticks for driving light effects. Linux + PulseAudio/PipeWire
-// only: it shells out to parec on the default sink's monitor, mirroring
-// pkg/screen's subprocess approach. There is no FFT — loudness is RMS and
+// of loudness/tone ticks for driving light effects. Capture is platform-
+// specific: Linux uses parec on the default sink's monitor (audio_linux.go);
+// Windows and macOS have no built-in output-loopback device, so Capture there
+// returns an error (audio_other.go). There is no FFT — loudness is RMS and
 // "tone" is the zero-crossing rate (a cheap bass-vs-treble proxy).
 package audio
 
 import (
-	"context"
 	"encoding/binary"
-	"io"
 	"math"
-	"os/exec"
 )
 
 const (
@@ -22,42 +20,6 @@ const (
 type Tick struct {
 	Level float64 // 0..1 loudness, AGC-normalized (drives brightness)
 	Tone  float64 // 0..1 zero-crossing rate, low=bass high=treble (drives hue)
-}
-
-// Capture starts recording the default monitor and returns a channel of Ticks.
-// The channel closes when ctx is cancelled or the recorder exits. Killing the
-// recorder and draining are handled internally.
-func Capture(ctx context.Context) (<-chan Tick, error) {
-	cmd := exec.CommandContext(ctx, "parec",
-		"--format=s16le", "--rate=22050", "--channels=1", "-d", "@DEFAULT_MONITOR@")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	out := make(chan Tick)
-	go func() {
-		defer close(out)
-		defer cmd.Wait()
-		buf := make([]byte, chunk*2) // 2 bytes per s16 sample
-		peak := 1e-4
-		for {
-			if _, err := io.ReadFull(stdout, buf); err != nil {
-				return
-			}
-			var t Tick
-			t, peak = analyze(buf, peak)
-			select {
-			case out <- t:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return out, nil
 }
 
 // analyze reduces one s16le mono buffer to a Tick. peak is a decaying running
