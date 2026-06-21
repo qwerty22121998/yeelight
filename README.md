@@ -52,16 +52,23 @@ Sync and Music Sync each need an OS capture backend:
 
 | | Screen Sync | Music Sync (system audio) |
 |---|---|---|
-| **Linux / Wayland** | `grim` | `parec` (PulseAudio/PipeWire) |
+| **Linux / Wayland** | `grim`¹ | `parec` (PulseAudio/PipeWire) |
 | **Linux / X11** | ImageMagick (`import`) | `parec` (PulseAudio/PipeWire) |
 | **Windows** | built-in (GDI) — no setup | built-in (WASAPI loopback) — no setup |
-| **macOS** | built-in (`screencapture`)¹ | **BlackHole** virtual device² |
+| **macOS** | built-in (`screencapture`)² | **BlackHole** virtual device³ |
 
-¹ macOS prompts for **Screen Recording** permission on first capture; sync stays
+The picker offers one entry per monitor; capture is downscaled before averaging,
+so Screen Sync stays cheap even at the fastest interval.
+
+¹ `grim` captures only on **wlroots** compositors (sway, Hyprland). On GNOME or
+KDE Wayland it returns black — run an X11 session (uses the ImageMagick path) for
+Screen Sync there. Detection is automatic via `$WAYLAND_DISPLAY`.
+
+² macOS prompts for **Screen Recording** permission on first capture; sync stays
 black until you grant it (System Settings → Privacy & Security → Screen
 Recording).
 
-² macOS has no built-in audio loopback. Install the free
+³ macOS has no built-in audio loopback. Install the free
 [BlackHole](https://github.com/ExistentialAudio/BlackHole) virtual device, then
 create a **Multi-Output Device** (Audio MIDI Setup) containing both your speakers
 and BlackHole and select it as system output — that keeps sound audible while
