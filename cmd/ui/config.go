@@ -20,6 +20,18 @@ type persistedSetting struct {
 	EffectDuration int                 `toml:"effect_duration_ms"`
 	Discover       persistDiscover     `toml:"discover"`
 	DeviceSync     []persistDeviceSync `toml:"device_sync"`
+	Style          string              `toml:"style"`
+	Theme          persistTheme        `toml:"theme"`
+	MusicScheme    string              `toml:"music_scheme"`
+	MusicFloor     *float64            `toml:"music_floor"` // pointer: nil = absent (keep default); 0 is a valid floor
+}
+
+type persistTheme struct {
+	Background string `toml:"background"`
+	Surface    string `toml:"surface"`
+	Text       string `toml:"text"`
+	Accent     string `toml:"accent"`
+	Border     string `toml:"border"`
 }
 
 type persistDeviceSync struct {
@@ -62,6 +74,10 @@ func (s *Setting) toPersisted() persistedSetting {
 			TimeoutMS:   int(s.DiscoverConfig.Timeout / time.Millisecond),
 			ListenPort:  s.DiscoverConfig.ListenPort,
 		},
+		Style:       s.Style,
+		Theme:       persistTheme(s.Theme),
+		MusicScheme: s.MusicScheme,
+		MusicFloor:  &s.MusicFloor,
 	}
 }
 
@@ -94,6 +110,36 @@ func (s *Setting) applyPersisted(p persistedSetting) {
 		s.DiscoverConfig.ListenPort = p.Discover.ListenPort
 	}
 	s.DiscoverConfig.Sanitize()
+
+	if p.Style != "" {
+		s.Style = p.Style
+	}
+
+	if p.MusicScheme != "" {
+		s.MusicScheme = p.MusicScheme
+	}
+
+	if p.MusicFloor != nil {
+		s.MusicFloor = *p.MusicFloor
+	}
+
+	// Overlay only the colors actually present on disk; s.Theme starts at
+	// darkTheme() so any field omitted from an old/partial config keeps its
+	// default rather than going empty.
+	for _, f := range []struct {
+		src string
+		dst *string
+	}{
+		{p.Theme.Background, &s.Theme.Background},
+		{p.Theme.Surface, &s.Theme.Surface},
+		{p.Theme.Text, &s.Theme.Text},
+		{p.Theme.Accent, &s.Theme.Accent},
+		{p.Theme.Border, &s.Theme.Border},
+	} {
+		if f.src != "" {
+			*f.dst = f.src
+		}
+	}
 }
 
 // Load overlays persisted config from disk onto s. A missing file is not an error.

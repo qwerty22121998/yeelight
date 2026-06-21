@@ -279,7 +279,7 @@ func (d *DeviceUI) renderInfo(ctx context.Context) {
 	pills.SetSelectionMode(widgets.QAbstractItemView__NoSelection)
 	pills.SetStyleSheet(`
 QListWidget { border: none; background: transparent; }
-QListWidget::item { background: #3a6ea5; color: white; border-radius: 9px; padding: 3px 8px; }`)
+QListWidget::item { background: ` + d.setting.Theme.Accent + `; color: white; border-radius: 9px; padding: 3px 8px; }`)
 	for _, m := range methods {
 		pills.AddItem(m)
 	}
@@ -599,6 +599,27 @@ func (d *DeviceUI) renderEffects(ctx context.Context) {
 		musicBtn.SetCheckable(true)
 		layout.AddRow3("Music Sync", musicBtn)
 
+		// Tone→color scheme and quiet-passage brightness floor. Shared across
+		// devices (one value on Setting), shown here so they sit with the Music
+		// Sync control that uses them; runMusicSync reads them live per-tick.
+		schemeCombo := widgets.NewQComboBox(nil)
+		schemeCombo.AddItems(musicSchemeNames)
+		schemeCombo.SetCurrentText(d.setting.MusicScheme)
+		schemeCombo.ConnectCurrentTextChanged(func(text string) {
+			d.setting.MusicScheme = text
+			d.setting.Save()
+		})
+		layout.AddRow3("Music Color", schemeCombo)
+
+		floorSpin := widgets.NewQSpinBox(nil)
+		floorSpin.SetRange(0, 100)
+		floorSpin.SetValue(int(d.setting.MusicFloor * 100))
+		floorSpin.ConnectValueChanged(func(value int) {
+			d.setting.MusicFloor = float64(value) / 100
+			d.setting.Save()
+		})
+		layout.AddRow3("Music Brightness Floor (%)", floorSpin)
+
 		// Visualizer: a scrolling waveform of recent levels, each bar tinted
 		// with the color sent for that tick. Shown only while sync runs, and
 		// updated at full audio rate even when the bulb itself updates slowly
@@ -672,6 +693,48 @@ func (s *rgbSender) Close() {
 	}
 }
 
+// musicScheme maps a tick's tone (0..1) to a hue window: bass sits at start,
+// treble at start+span (degrees). Picked in Settings → Effect.
+type musicScheme struct{ start, span float64 }
+
+const defaultMusicScheme = "Spectrum"
+const defaultMusicFloor = 0.2
+
+// musicSchemeNames is the picker order; musicSchemes is the lookup. Spectrum is
+// the default — the original hardcoded red→blue mapping.
+var (
+	musicSchemeNames = []string{"Spectrum", "Rainbow", "Warm", "Cool"}
+	musicSchemes     = map[string]musicScheme{
+		"Spectrum": {0, 240},   // red → blue
+		"Rainbow":  {0, 360},   // full wheel
+		"Warm":     {0, 60},    // red → yellow
+		"Cool":     {180, 120}, // cyan → purple
+	}
+)
+
+// schemeHue resolves a scheme name (unknown falls back to the default) and maps
+// tone to its hue. Read per-tick so a scheme change applies without restarting.
+func schemeHue(name string, tone float64) float64 {
+	s, ok := musicSchemes[name]
+	if !ok {
+		s = musicSchemes[defaultMusicScheme]
+	}
+	return s.start + tone*s.span
+}
+
+// musicValue maps loudness (0..1) to a brightness value, with floor as the
+// quiet-passage minimum so silence dims rather than going black. floor is
+// clamped to 0..1.
+func musicValue(floor, level float64) float64 {
+	if floor < 0 {
+		floor = 0
+	}
+	if floor > 1 {
+		floor = 1
+	}
+	return floor + (1-floor)*level
+}
+
 // runMusicSync captures system audio and maps each tick to an ambient color
 // until ctx is cancelled or the stream ends. It prefers music mode (no command
 // rate limit); if the bulb rejects set_music it falls back to throttled
@@ -717,9 +780,9 @@ func (d *DeviceUI) runMusicSync(ctx context.Context, btn *widgets.QPushButton, v
 				stop()
 				return
 			}
-			// tone -> hue (red..blue), loudness -> value, floored at 0.2 so a
-			// quiet passage dims rather than going black.
-			rgb := hsvToColorInt(t.Tone*240, 1, 0.2+0.8*t.Level)
+			// tone -> hue (per the chosen scheme), loudness -> value, floored
+			// at MusicFloor so a quiet passage dims rather than going black.
+			rgb := hsvToColorInt(schemeHue(d.setting.MusicScheme, t.Tone), 1, musicValue(d.setting.MusicFloor, t.Level))
 			level := t.Level
 			runOnUI(func() { viz.push(level, rgb) })
 			sender.send(ctx, rgb)

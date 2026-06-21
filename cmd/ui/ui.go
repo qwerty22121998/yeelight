@@ -27,6 +27,9 @@ func NewYeelightUI(root *widgets.QMainWindow) *UI {
 			Effect:         yeelight.EffectSmooth,
 			EffectDuration: 500,
 			Sync:           map[string]*DeviceSync{},
+			Theme:          darkTheme(),
+			MusicScheme:    defaultMusicScheme,
+			MusicFloor:     defaultMusicFloor,
 		},
 		root: root,
 	}
@@ -131,7 +134,7 @@ func (ui *UI) scan(ctx context.Context) {
 
 func (ui *UI) functionBtnUI(ctx context.Context) widgets.QWidget_ITF {
 	widget := widgets.NewQWidget(nil, core.Qt__Widget)
-	layout := widgets.NewQGridLayout2()
+	layout := widgets.NewQHBoxLayout()
 	widget.SetLayout(layout)
 	scanDeviceBtn := widgets.NewQPushButton2("Scan Device", nil)
 	scanDeviceBtn.ConnectClicked(func(checked bool) {
@@ -152,11 +155,38 @@ func (ui *UI) functionBtnUI(ctx context.Context) widgets.QWidget_ITF {
 	loading.SetRange(0, 1)
 	ui.loadingProgress = loading
 
-	layout.AddWidget2(scanDeviceBtn, 0, 0, 0)
-	layout.AddWidget2(hideBtn, 0, 1, 0)
-	layout.AddWidget2(quitBtn, 0, 2, 0)
-	layout.AddWidget2(loading, 0, 3, 0)
+	layout.AddWidget(scanDeviceBtn, 0, 0)
+	layout.AddWidget(hideBtn, 0, 0)
+	layout.AddWidget(loading, 1, 0) // expands, pushing Quit to the far right
+	layout.AddWidget(quitBtn, 0, 0)
 	return widget
+}
+
+// appIcon paints a generic warm-glow lightbulb for the window and tray. It's a
+// drawn placeholder, not the Yeelight brand mark — no asset to ship, no
+// trademark to embed. ponytail: swap in gui.NewQIcon5("logo.png") if you want
+// real branding.
+func appIcon() *gui.QIcon {
+	const sz = 64
+	pix := gui.NewQPixmap2(core.NewQSize2(sz, sz))
+	pix.Fill(gui.NewQColor3(0, 0, 0, 0)) // transparent
+
+	p := gui.NewQPainter2(pix)
+	p.SetRenderHint(gui.QPainter__Antialiasing, true)
+	p.SetPen3(core.Qt__NoPen)
+
+	// soft glow halo
+	p.SetBrush(gui.NewQBrush3(gui.NewQColor3(255, 200, 70, 60), core.Qt__SolidPattern))
+	p.DrawEllipse3(6, 4, 52, 52)
+	// bulb glass
+	p.SetBrush(gui.NewQBrush3(gui.NewQColor3(255, 196, 0, 255), core.Qt__SolidPattern))
+	p.DrawEllipse3(18, 8, 28, 28)
+	// screw base
+	p.SetBrush(gui.NewQBrush3(gui.NewQColor3(120, 120, 130, 255), core.Qt__SolidPattern))
+	p.DrawRoundedRect2(25, 36, 14, 18, 3, 3, core.Qt__AbsoluteSize)
+
+	p.End()
+	return gui.NewQIcon2(pix)
 }
 
 // initTray adds a system-tray icon so the window can be hidden and restored.
@@ -168,8 +198,7 @@ func (ui *UI) initTray(root *widgets.QMainWindow) {
 	if !widgets.QSystemTrayIcon_IsSystemTrayAvailable() {
 		slog.Warn("system tray unavailable; need an SNI host (e.g. waybar tray) on Wayland")
 	}
-	icon := widgets.QApplication_Style().StandardIcon(widgets.QStyle__SP_ComputerIcon, nil, nil)
-	tray := widgets.NewQSystemTrayIcon2(icon, root)
+	tray := widgets.NewQSystemTrayIcon2(appIcon(), root)
 	tray.SetToolTip("Yeelight")
 
 	restore := func() {
@@ -194,6 +223,7 @@ func (ui *UI) initTray(root *widgets.QMainWindow) {
 
 func (ui *UI) RenderMain(ctx context.Context, root *widgets.QMainWindow) {
 	ui.root = root
+	root.SetWindowIcon(appIcon())
 	widget := widgets.NewQWidget(root, core.Qt__Widget)
 	layout := widgets.NewQVBoxLayout()
 	widget.SetLayout(layout)
