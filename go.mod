@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/gen2brain/malgo v0.11.25
 	github.com/therecipe/qt v0.0.0-20200904063919-c0c124a5770d
 )
 

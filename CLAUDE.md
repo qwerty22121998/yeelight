@@ -38,9 +38,21 @@ The Yeelight LAN protocol: SSDP discovery over UDP, then a persistent TCP contro
 - **Commands**: build with `C(method, params...)` (`command.go`). Method/Property/Effect names live in `const.go`. Color flows: build `ColorFlow{...}.Build()` and splat into `C()` (`color_flow.go`).
 - **Music mode** (`device_music.go`): `StartMusic()` opens a local TCP listener, sends `set_music` (action 1) telling the bulb to dial back, and blocks until it connects. The returned `*Music` bypasses the bulb's ~60-cmd/min rate limit: `Send()` writes **fire-and-forget** (no reply on the music channel), so it's safe to push dozens of updates/sec. `Stop()` closes the conn and sends `set_music` (action 0). Reaches bulbs that support music mode but omit `set_music` from their advertised list.
 
-### `pkg/audio` — system audio capture (Linux only, no UI deps)
+### `pkg/screen` — desktop region → average color (cross-platform, no UI deps)
 
-`Capture(ctx)` shells out to `parec` on `@DEFAULT_MONITOR@` (PulseAudio/PipeWire — mirrors `pkg/screen`'s subprocess approach) and returns a `<-chan Tick`. Each `Tick` reduces a ~93ms window to `Level` (0..1 RMS loudness, AGC-normalized via a decaying running peak → brightness) and `Tone` (0..1 zero-crossing rate, bass→treble → hue). No FFT — ZCR is a cheap tone proxy (`analyze`, marked `ponytail:`; swap an FFT band-split in if hue mapping feels wrong). Channel closes on ctx cancel or recorder exit.
+`Average(x,y,w,h)` captures the rect and returns its mean color packed as `(r<<16)|(g<<8)|b`. The averaging (`averageImage`, stride-sampled so a full-res frame stays cheap, capped at `maxSamples`) is platform-independent; `capture` is per-`GOOS` behind build tags (`screen_<goos>.go`):
+- **Linux** (`screen_linux.go`): Wayland → `grim`, X11 → ImageMagick `import` (root-window crop). Picks by `$WAYLAND_DISPLAY`. (A Qt/X11 root grab returns black under XWayland, so the UI can't capture itself — hence the subprocess.)
+- **Windows** (`screen_windows.go`): GDI via `syscall.NewLazyDLL` (pure Go, no CGO) — `StretchBlt` into a 128×72 DIB, then BGRA→RGBA repack.
+- **macOS** (`screen_darwin.go`): built-in `screencapture -R` to a temp PNG (no stdout mode; needs Screen Recording permission on first use).
+
+### `pkg/audio` — system audio capture (cross-platform, no UI deps)
+
+`Capture(ctx)` returns a `<-chan Tick`. `Tick`/`analyze` (the s16le-window → loudness/tone reduction) are platform-independent; `Capture` is build-tagged per backend:
+- **Linux** (`audio_linux.go`, no CGO): shells out to `parec` on `@DEFAULT_MONITOR@` (PulseAudio/PipeWire, display-server independent so Wayland+X11 both work).
+- **Windows + macOS** (`audio_malgo.go`, `//go:build windows || darwin`, **CGO** via `github.com/gen2brain/malgo` — miniaudio, bundled C, no system deps). Windows uses WASAPI **loopback** (grabs the default output directly, zero setup). macOS has no CoreAudio loopback, so it captures the default **input** device — the user must install the **BlackHole** virtual device and route output to it (a multi-output device keeps speakers live) for real system audio. The miniaudio data callback runs on a realtime audio thread, so it only copies bytes to a buffered `raw` channel (dropping if full, never blocking audio); a goroutine reassembles `chunk`-sized windows, runs `analyze`, and emits Ticks.
+- **Other GOOS** (`audio_other.go`): returns an "unsupported" error.
+
+Each `Tick` reduces a ~93ms window to `Level` (0..1 RMS loudness, AGC-normalized via a decaying running peak → brightness) and `Tone` (0..1 zero-crossing rate, bass→treble → hue). No FFT — ZCR is a cheap tone proxy (`analyze`, marked `ponytail:`; swap an FFT band-split in if hue mapping feels wrong). Channel closes on ctx cancel or recorder exit. The CGO backend builds only with a target C toolchain (same requirement as `cmd/ui`'s Qt); Linux stays pure-Go.
 
 ### `cmd/ui` — Qt GUI
 
